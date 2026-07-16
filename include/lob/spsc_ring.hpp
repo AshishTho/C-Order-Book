@@ -46,6 +46,8 @@ class SpscRing {
     static constexpr std::size_t MASK = CapacityPow2 - 1;
 
 public:
+    using value_type = T;
+
     SpscRing() = default;
     SpscRing(const SpscRing&)            = delete;
     SpscRing& operator=(const SpscRing&) = delete;

@@ -76,6 +76,11 @@ add_executable(bench_flat_hash bench/bench_flat_hash.cpp)
 target_link_libraries(bench_flat_hash PRIVATE lob)
 target_compile_options(bench_flat_hash PRIVATE ${HOT_FLAGS})
 
+# --- Phase 7: OFI + micro-price signal generation ---
+add_executable(bench_signals bench/bench_signals.cpp)
+target_link_libraries(bench_signals PRIVATE lob)
+target_compile_options(bench_signals PRIVATE ${HOT_FLAGS})
+
 if(NOT MSVC)
     find_package(Threads REQUIRED)
     target_link_libraries(test_correctness PRIVATE Threads::Threads)
@@ -86,6 +91,7 @@ if(NOT MSVC)
     target_link_libraries(bench_risk PRIVATE Threads::Threads)
     target_link_libraries(bench_journal PRIVATE Threads::Threads)
     target_link_libraries(bench_flat_hash PRIVATE Threads::Threads)
+    target_link_libraries(bench_signals PRIVATE Threads::Threads)
     if(WIN32)   # MinGW: fully static so no runtime DLL resolution
         target_link_options(bench_rdtsc PRIVATE -static)
         target_link_options(test_correctness PRIVATE -static)
