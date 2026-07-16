@@ -42,6 +42,7 @@
 #include "pipeline_common.hpp"
 #include "lob/arena_ring.hpp"
 #include "lob/bbo.hpp"
+#include "lob/risk.hpp"
 #include <atomic>
 #include <thread>
 
@@ -161,6 +162,38 @@ int main() {
         Price my_bid = -1, my_ask = -1;                // last quoted prices
         BboUpdate u;
         std::uint64_t gaps = 0, last_seq = 0;
+
+        // PHASE 4: pre-trade risk gateway ON the strategy thread, gating
+        // every quote before it may enter the order ring. Limits sized so
+        // healthy quoting flows untouched (this proves the gate costs ~ns,
+        // not that it fires): 8-lot fat finger vs 1-lot quotes, collar =
+        // the book's ladder, 64-lot exposure vs <=2 conservative open lots,
+        // 256 msgs / 100us (2.56M msg/s) rate cap vs ~1k quotes/run.
+        RiskGateway<256> risk(/*max_qty*/ 8,
+                              /*collar*/ BASE, BASE + (Price(1) << 16) - 1,
+                              /*pos_limit*/ 64,
+                              /*window*/ std::uint64_t(100'000.0 * ghz));
+        std::uint64_t risk_rejects = 0;
+
+        // Gate + send one cancel-and-replace instruction. check() runs
+        // BEFORE on_cancel(): the old quote's exposure stays counted until
+        // the replace is actually accepted (a pending cancel is not a
+        // confirmed cancel -- conservative, the standard 15c3-5 posture).
+        auto quote = [&](Side s, Price px, Price& my_px,
+                         std::uint64_t origin) noexcept {
+            if (LOB_UNLIKELY(risk.check(s, px, 1, __rdtsc()) != RJ_NONE)) {
+                ++risk_rejects;
+                return;                                // quote NOT updated
+            }
+            if (my_px >= 0) risk.on_cancel(s, 1);      // replace pulls old
+            my_px = px;
+            Message m{};
+            m.type = MsgType::NewOrder; m.side = s;
+            m.price = px; m.qty = 1;
+            m.id = origin;                             // tick-to-trade origin
+            while (!g_orders.try_push(m)) { }
+        };
+
         strat_ready.store(true, std::memory_order_release);
         while (true) {
             if (!g_bbo.try_pop(u)) {
@@ -179,29 +212,20 @@ int main() {
             const bool buy_pressure = u.bid_qty >= u.ask_qty;
             if (u.bid_px >= 0) {
                 const Price want = buy_pressure ? u.bid_px : u.bid_px - 1;
-                if (want != my_bid) {
-                    my_bid = want;
-                    Message m{};
-                    m.type = MsgType::NewOrder; m.side = Side::Buy;
-                    m.price = want; m.qty = 1;
-                    m.id = u.origin_tsc;               // tick-to-trade origin
-                    while (!g_orders.try_push(m)) { }
-                }
+                if (want != my_bid)
+                    quote(Side::Buy, want, my_bid, u.origin_tsc);
             }
             if (u.ask_px >= 0) {
                 const Price want = buy_pressure ? u.ask_px + 1 : u.ask_px;
-                if (want != my_ask) {
-                    my_ask = want;
-                    Message m{};
-                    m.type = MsgType::NewOrder; m.side = Side::Sell;
-                    m.price = want; m.qty = 1;
-                    m.id = u.origin_tsc;
-                    while (!g_orders.try_push(m)) { }
-                }
+                if (want != my_ask)
+                    quote(Side::Sell, want, my_ask, u.origin_tsc);
             }
         }
-        std::printf("  strategy: %llu conflation gaps seen\n",
-                    (unsigned long long)gaps);
+        std::printf("  strategy: %llu conflation gaps, %llu risk accepts, "
+                    "%llu risk rejects\n",
+                    (unsigned long long)gaps,
+                    (unsigned long long)risk.accepted(),
+                    (unsigned long long)risk_rejects);
     });
 
     // =======================================================================

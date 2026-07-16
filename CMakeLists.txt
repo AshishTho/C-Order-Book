@@ -61,6 +61,11 @@ add_executable(bench_trading_loop bench/bench_trading_loop.cpp)
 target_link_libraries(bench_trading_loop PRIVATE lob)
 target_compile_options(bench_trading_loop PRIVATE ${HOT_FLAGS})
 
+# --- Phase 4: pre-trade risk gateway microbenchmark ---
+add_executable(bench_risk bench/bench_risk.cpp)
+target_link_libraries(bench_risk PRIVATE lob)
+target_compile_options(bench_risk PRIVATE ${HOT_FLAGS})
+
 if(NOT MSVC)
     find_package(Threads REQUIRED)
     target_link_libraries(test_correctness PRIVATE Threads::Threads)
@@ -68,12 +73,14 @@ if(NOT MSVC)
     target_link_libraries(bench_itch_pipeline PRIVATE Threads::Threads)
     target_link_libraries(bench_zero_copy PRIVATE Threads::Threads)
     target_link_libraries(bench_trading_loop PRIVATE Threads::Threads)
+    target_link_libraries(bench_risk PRIVATE Threads::Threads)
     if(WIN32)   # MinGW: fully static so no runtime DLL resolution
         target_link_options(bench_rdtsc PRIVATE -static)
         target_link_options(test_correctness PRIVATE -static)
         target_link_options(bench_itch_pipeline PRIVATE -static)
         target_link_options(bench_zero_copy PRIVATE -static)
         target_link_options(bench_trading_loop PRIVATE -static)
+        target_link_options(bench_risk PRIVATE -static)
     endif()
 endif()
 
