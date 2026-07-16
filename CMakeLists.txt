@@ -51,15 +51,22 @@ add_executable(bench_itch_pipeline bench/bench_itch_pipeline.cpp)
 target_link_libraries(bench_itch_pipeline PRIVATE lob)
 target_compile_options(bench_itch_pipeline PRIVATE ${HOT_FLAGS})
 
+# --- struct-copy ring vs zero-copy arena comparison ---
+add_executable(bench_zero_copy bench/bench_zero_copy.cpp)
+target_link_libraries(bench_zero_copy PRIVATE lob)
+target_compile_options(bench_zero_copy PRIVATE ${HOT_FLAGS})
+
 if(NOT MSVC)
     find_package(Threads REQUIRED)
     target_link_libraries(test_correctness PRIVATE Threads::Threads)
     target_link_libraries(bench_rdtsc PRIVATE Threads::Threads)
     target_link_libraries(bench_itch_pipeline PRIVATE Threads::Threads)
+    target_link_libraries(bench_zero_copy PRIVATE Threads::Threads)
     if(WIN32)   # MinGW: fully static so no runtime DLL resolution
         target_link_options(bench_rdtsc PRIVATE -static)
         target_link_options(test_correctness PRIVATE -static)
         target_link_options(bench_itch_pipeline PRIVATE -static)
+        target_link_options(bench_zero_copy PRIVATE -static)
     endif()
 endif()
 
