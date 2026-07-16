@@ -8,6 +8,7 @@
 #include "lob/spsc_ring.hpp"
 #include "lob/level_bitmap.hpp"
 #include "lob/memory_pool.hpp"
+#include "lob/itch.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -195,6 +196,124 @@ static void test_sweep_across_gap() {
 }
 
 // ---------------------------------------------------------------------------
+static void test_reduce() {
+    Book book(BASE);
+    g_trades.clear();
+
+    OrderId a = book.new_order(Side::Sell, 100'600, 10, collect);
+    OrderId b = book.new_order(Side::Sell, 100'700, 5, collect);
+
+    // Partial reduce: shrinks in place, keeps priority and level totals.
+    CHECK(book.reduce(a, 4) == 4);
+    CHECK(book.level_qty(100'600) == 6);
+    CHECK(book.best_ask() == 100'600);
+
+    // Reduce to zero: removes the order and reveals the next level.
+    CHECK(book.reduce(a, 6) == 6);
+    CHECK(book.level_qty(100'600) == 0);
+    CHECK(book.best_ask() == 100'700);
+
+    // Stale id after removal must be rejected.
+    CHECK(book.reduce(a, 1) == 0);
+    // Over-reduce caps at remaining quantity (ITCH never sends this, but
+    // the engine must stay consistent regardless).
+    CHECK(book.reduce(b, 99) == 5);
+    CHECK(book.best_ask() == -1);
+    std::puts("  reduce ............. OK");
+}
+
+// ---------------------------------------------------------------------------
+// ITCH parser: hand-craft a big-endian wire buffer, run the zero-copy
+// parser over it, and verify every decoded field.
+// ---------------------------------------------------------------------------
+static void put_be(std::vector<std::uint8_t>& b, std::uint64_t v, int bytes) {
+    for (int i = bytes - 1; i >= 0; --i)
+        b.push_back(std::uint8_t(v >> (8 * i)));
+}
+
+static void test_itch_parser() {
+    std::vector<std::uint8_t> wire;
+    auto header = [&](char t) {
+        wire.push_back(std::uint8_t(t));
+        put_be(wire, 7, 2);                    // stock locate
+        put_be(wire, 3, 2);                    // tracking number
+        put_be(wire, 123'456'789'012ull, 6);   // timestamp
+    };
+
+    // 'A' add: ref=42, sell, 500 shares, price $123.4567
+    put_be(wire, sizeof(itch::AddOrder), 2);
+    header('A');
+    put_be(wire, 42, 8);
+    wire.push_back('S');
+    put_be(wire, 500, 4);
+    const char sym[8] = {'L','O','B','X',' ',' ',' ',' '};
+    wire.insert(wire.end(), sym, sym + 8);
+    put_be(wire, 1'234'567, 4);
+
+    // 'E' executed: ref=42, 200 shares, match 9001
+    put_be(wire, sizeof(itch::OrderExecuted), 2);
+    header('E');
+    put_be(wire, 42, 8);
+    put_be(wire, 200, 4);
+    put_be(wire, 9001, 8);
+
+    // 'X' partial cancel: ref=42, 100 shares
+    put_be(wire, sizeof(itch::OrderCancel), 2);
+    header('X');
+    put_be(wire, 42, 8);
+    put_be(wire, 100, 4);
+
+    // 'D' delete: ref=42
+    put_be(wire, sizeof(itch::OrderDelete), 2);
+    header('D');
+    put_be(wire, 42, 8);
+
+    struct Sink {
+        int seen = 0;
+        void operator()(const itch::AddOrder& a) {
+            CHECK(itch::bswap(a.h.stock_locate) == 7);
+            CHECK(itch::bswap(a.h.tracking_number) == 3);
+            CHECK(itch::timestamp_ns(a.h) == 123'456'789'012ull);
+            CHECK(itch::bswap(a.order_ref) == 42);
+            CHECK(a.side == 'S');
+            CHECK(itch::bswap(a.shares) == 500);
+            CHECK(std::memcmp(a.stock, "LOBX    ", 8) == 0);
+            CHECK(itch::bswap(a.price) == 1'234'567);
+            ++seen;
+        }
+        void operator()(const itch::OrderExecuted& e) {
+            CHECK(itch::bswap(e.order_ref) == 42);
+            CHECK(itch::bswap(e.executed_shares) == 200);
+            CHECK(itch::bswap(e.match_number) == 9001);
+            ++seen;
+        }
+        void operator()(const itch::OrderCancel& x) {
+            CHECK(itch::bswap(x.order_ref) == 42);
+            CHECK(itch::bswap(x.canceled_shares) == 100);
+            ++seen;
+        }
+        void operator()(const itch::OrderDelete& d) {
+            CHECK(itch::bswap(d.order_ref) == 42);
+            ++seen;
+        }
+    } sink;
+
+    itch::ItchParser p(reinterpret_cast<const std::byte*>(wire.data()),
+                       wire.size());
+    while (p.next(sink)) {}
+    CHECK(sink.seen == 4);
+    CHECK(p.exhausted());
+
+    // Truncated frame must stop cleanly, never read past the end.
+    itch::ItchParser trunc(reinterpret_cast<const std::byte*>(wire.data()),
+                           wire.size() - 5);
+    Sink s2;
+    while (trunc.next(s2)) {}
+    CHECK(s2.seen == 3);
+    std::puts("  itch_parser ........ OK");
+}
+
+// ---------------------------------------------------------------------------
 // SPSC ring: move 4M sequenced items across two real threads and verify
 // order, completeness, and that neither side ever blocks indefinitely.
 static void test_spsc_ring() {
@@ -227,6 +346,8 @@ int main() {
     test_price_time_priority();
     test_cancel();
     test_sweep_across_gap();
+    test_reduce();
+    test_itch_parser();
     test_spsc_ring();
     std::puts("ALL TESTS PASSED");
     return 0;

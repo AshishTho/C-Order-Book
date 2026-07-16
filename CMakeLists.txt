@@ -46,13 +46,20 @@ add_executable(bench_rdtsc bench/bench_rdtsc.cpp)
 target_link_libraries(bench_rdtsc PRIVATE lob)
 target_compile_options(bench_rdtsc PRIVATE ${HOT_FLAGS})
 
+# --- ITCH 5.0 gateway pipeline benchmark ---
+add_executable(bench_itch_pipeline bench/bench_itch_pipeline.cpp)
+target_link_libraries(bench_itch_pipeline PRIVATE lob)
+target_compile_options(bench_itch_pipeline PRIVATE ${HOT_FLAGS})
+
 if(NOT MSVC)
     find_package(Threads REQUIRED)
     target_link_libraries(test_correctness PRIVATE Threads::Threads)
     target_link_libraries(bench_rdtsc PRIVATE Threads::Threads)
+    target_link_libraries(bench_itch_pipeline PRIVATE Threads::Threads)
     if(WIN32)   # MinGW: fully static so no runtime DLL resolution
         target_link_options(bench_rdtsc PRIVATE -static)
         target_link_options(test_correctness PRIVATE -static)
+        target_link_options(bench_itch_pipeline PRIVATE -static)
     endif()
 endif()
 

@@ -57,14 +57,22 @@ static_assert(sizeof(PriceLevel) == 32);
 // ---------------------------------------------------------------------------
 // Inbound message (what travels through the SPSC ring). 32 bytes, POD.
 // ---------------------------------------------------------------------------
-enum class MsgType : std::uint8_t { NewOrder = 0, Cancel = 1 };
+// NewOrder : place a limit order (may cross).
+// Cancel   : remove a resting order entirely   (ITCH 'D' Order Delete).
+// Execute  : fill `qty` of a resting order      (ITCH 'E' Order Executed).
+// Reduce   : cancel `qty` of a resting order    (ITCH 'X' partial cancel).
+// Execute and Reduce mutate the book identically (both call reduce()); they
+// are distinct types so the consumer can count trades vs. cancels correctly.
+enum class MsgType : std::uint8_t {
+    NewOrder = 0, Cancel = 1, Execute = 2, Reduce = 3
+};
 
 struct Message {
-    Price    price;     // ticks (ignored for Cancel)
-    Qty      qty;       // lots  (ignored for Cancel)
-    OrderId  id;        // engine-assigned id (Cancel); 0 for NewOrder
+    Price    price;     // ticks (NewOrder only)
+    Qty      qty;       // lots  (NewOrder / Execute / Reduce)
+    OrderId  id;        // engine id -- or gateway order-reference (see itch)
     MsgType  type;
-    Side     side;      // ignored for Cancel
+    Side     side;      // NewOrder only
     std::uint8_t _pad[6];
 };
 static_assert(sizeof(Message) == 32);
@@ -163,7 +171,70 @@ public:
         if (LOB_UNLIKELY(generations_[slot] !=
                          static_cast<std::uint32_t>(id >> 32))) return false;
         Order* o = pool_.at(slot);
+        unlink_and_release(o, slot);
+        return true;
+    }
 
+    // ========================================================================
+    // HOT PATH -- reduce a resting order by `q` lots (ITCH 'E' Order Executed
+    // and 'X' partial cancel both map here). O(1): the common case (partial)
+    // is two subtractions; full exhaustion falls through to the unlink path.
+    // Returns the quantity actually removed (0 => stale/unknown id).
+    // ========================================================================
+    LOB_FORCE_INLINE Qty reduce(OrderId id, Qty q) noexcept {
+        const std::size_t slot = static_cast<std::size_t>(id & 0xFFFFFFFFu) - 1;
+        if (LOB_UNLIKELY(slot >= PoolCap)) return 0;
+        if (LOB_UNLIKELY(generations_[slot] !=
+                         static_cast<std::uint32_t>(id >> 32))) return 0;
+        Order* o = pool_.at(slot);
+
+        if (LOB_LIKELY(q < o->qty)) {           // partial: 2 stores, done
+            o->qty -= q;
+            levels_[static_cast<std::size_t>(o->price - base_)].total_qty -= q;
+            return q;
+        }
+        const Qty removed = o->qty;             // full: remove from book
+        unlink_and_release(o, slot);
+        return removed;
+    }
+
+    // Message dispatcher -- what the engine thread runs per ring item.
+    // (Gateways that translate exchange order-references to engine ids do
+    // their own dispatch; this is the direct-id path.)
+    template <typename TradeHandler>
+    LOB_FORCE_INLINE void apply(const Message& m, TradeHandler&& on_trade) noexcept {
+        switch (m.type) {
+        case MsgType::NewOrder:
+            new_order(m.side, m.price, m.qty, on_trade);  break;
+        case MsgType::Cancel:
+            cancel(m.id);                                 break;
+        case MsgType::Execute:
+        case MsgType::Reduce:
+            reduce(m.id, m.qty);                          break;
+        }
+    }
+
+    // ---- observers (used by tests; also O(1)) ----
+    Price best_bid() const noexcept {
+        return best_bid_ == NPOS ? -1 : base_ + static_cast<Price>(best_bid_);
+    }
+    Price best_ask() const noexcept {
+        return best_ask_ >= NumTicks ? -1 : base_ + static_cast<Price>(best_ask_);
+    }
+    Qty level_qty(Price p) const noexcept {
+        const std::size_t idx = static_cast<std::size_t>(p - base_);
+        return idx < NumTicks ? levels_[idx].total_qty : 0;
+    }
+
+private:
+    // Sentinel id returned when a taker fully fills without resting.
+    static constexpr OrderId TAKER_FILLED_ID = ~OrderId{0};
+
+    // ------------------------------------------------------------------
+    // Remove a live order from its level, invalidate its id, and recycle
+    // its arena slot. Shared by cancel() and reduce()-to-zero.
+    // ------------------------------------------------------------------
+    LOB_FORCE_INLINE void unlink_and_release(Order* o, std::size_t slot) noexcept {
         const std::size_t idx = static_cast<std::size_t>(o->price - base_);
         PriceLevel& lvl = levels_[idx];
 
@@ -186,33 +257,7 @@ public:
         }
         ++generations_[slot];       // invalidate the id before slot reuse
         pool_.release(o);
-        return true;
     }
-
-    // Message dispatcher -- what the engine thread runs per ring item.
-    template <typename TradeHandler>
-    LOB_FORCE_INLINE void apply(const Message& m, TradeHandler&& on_trade) noexcept {
-        if (LOB_LIKELY(m.type == MsgType::NewOrder))
-            new_order(m.side, m.price, m.qty, on_trade);
-        else
-            cancel(m.id);
-    }
-
-    // ---- observers (used by tests; also O(1)) ----
-    Price best_bid() const noexcept {
-        return best_bid_ == NPOS ? -1 : base_ + static_cast<Price>(best_bid_);
-    }
-    Price best_ask() const noexcept {
-        return best_ask_ >= NumTicks ? -1 : base_ + static_cast<Price>(best_ask_);
-    }
-    Qty level_qty(Price p) const noexcept {
-        const std::size_t idx = static_cast<std::size_t>(p - base_);
-        return idx < NumTicks ? levels_[idx].total_qty : 0;
-    }
-
-private:
-    // Sentinel id returned when a taker fully fills without resting.
-    static constexpr OrderId TAKER_FILLED_ID = ~OrderId{0};
 
     // ------------------------------------------------------------------
     // Fill `qty` against resting orders at level `idx` (side = MakerSide).
