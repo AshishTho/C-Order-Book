@@ -1,0 +1,21 @@
+# Build artifacts
+build/
+cmake-build-*/
+out/
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.pdb
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
+
+# Toolchain / temp
+*.zip

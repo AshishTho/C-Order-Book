@@ -1,0 +1,60 @@
+# =============================================================================
+# Ultra-Low Latency Limit Order Book -- build configuration.
+#
+# FLAG RATIONALE
+#   -O3               : full optimisation, aggressive inlining (the engine is
+#                       header-only by design so everything inlines into the
+#                       caller's translation unit).
+#   -march=native     : emit TZCNT/LZCNT/BMI2 for the bitmap, and schedule for
+#                       the actual microarchitecture. A production build farm
+#                       would pin an explicit -march (e.g. icelake-server).
+#   -fno-exceptions   : no EH frames / landing pads on the hot path; every
+#   -fno-rtti           hot function is noexcept anyway. Smaller, straighter
+#                       code => better icache utilisation.
+#   -fno-plt          : direct calls into shared libs (irrelevant here since
+#                       we're static, but standard ULL hygiene).
+#   -static           : (MinGW) no DLL loader indirection at startup.
+# =============================================================================
+cmake_minimum_required(VERSION 3.16)
+project(ull_orderbook CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+add_library(lob INTERFACE)
+target_include_directories(lob INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+if(MSVC)
+    set(HOT_FLAGS /O2 /Ob3 /arch:AVX2 /GR- /EHs-c- /DNOMINMAX)
+else()
+    set(HOT_FLAGS -O3 -march=native -fno-exceptions -fno-rtti -fno-plt
+                  -Wall -Wextra)
+endif()
+
+# --- correctness suite (run first: numbers are meaningless if wrong) ---
+add_executable(test_correctness tests/test_correctness.cpp)
+target_link_libraries(test_correctness PRIVATE lob)
+target_compile_options(test_correctness PRIVATE ${HOT_FLAGS})
+
+# --- RDTSC benchmark ---
+add_executable(bench_rdtsc bench/bench_rdtsc.cpp)
+target_link_libraries(bench_rdtsc PRIVATE lob)
+target_compile_options(bench_rdtsc PRIVATE ${HOT_FLAGS})
+
+if(NOT MSVC)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_correctness PRIVATE Threads::Threads)
+    target_link_libraries(bench_rdtsc PRIVATE Threads::Threads)
+    if(WIN32)   # MinGW: fully static so no runtime DLL resolution
+        target_link_options(bench_rdtsc PRIVATE -static)
+        target_link_options(test_correctness PRIVATE -static)
+    endif()
+endif()
+
+enable_testing()
+add_test(NAME correctness COMMAND test_correctness)
