@@ -56,17 +56,24 @@ add_executable(bench_zero_copy bench/bench_zero_copy.cpp)
 target_link_libraries(bench_zero_copy PRIVATE lob)
 target_compile_options(bench_zero_copy PRIVATE ${HOT_FLAGS})
 
+# --- Phase 3: closed trading loop (BBO publisher -> strategy -> engine) ---
+add_executable(bench_trading_loop bench/bench_trading_loop.cpp)
+target_link_libraries(bench_trading_loop PRIVATE lob)
+target_compile_options(bench_trading_loop PRIVATE ${HOT_FLAGS})
+
 if(NOT MSVC)
     find_package(Threads REQUIRED)
     target_link_libraries(test_correctness PRIVATE Threads::Threads)
     target_link_libraries(bench_rdtsc PRIVATE Threads::Threads)
     target_link_libraries(bench_itch_pipeline PRIVATE Threads::Threads)
     target_link_libraries(bench_zero_copy PRIVATE Threads::Threads)
+    target_link_libraries(bench_trading_loop PRIVATE Threads::Threads)
     if(WIN32)   # MinGW: fully static so no runtime DLL resolution
         target_link_options(bench_rdtsc PRIVATE -static)
         target_link_options(test_correctness PRIVATE -static)
         target_link_options(bench_itch_pipeline PRIVATE -static)
         target_link_options(bench_zero_copy PRIVATE -static)
+        target_link_options(bench_trading_loop PRIVATE -static)
     endif()
 endif()
 
