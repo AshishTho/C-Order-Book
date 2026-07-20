@@ -133,14 +133,28 @@ public:
     // HOT PATH -- new limit order. Returns the engine id (0 => rejected).
     // Price-time priority: cross against the far side first, rest remainder.
     // `on_trade` is any callable `void(const Trade&)`; it inlines away.
+    //
+    // `post_only` (maker-only / "add liquidity or reject"): if the order
+    // would execute on arrival, it must be rejected outright rather than
+    // partially filled or repriced. `crosses` is computed with the exact
+    // same comparison the matching loop below would use, so "would cross"
+    // and "would match" can never disagree. The reject test is a single
+    // bitwise AND of two already-computed booleans (`&`, not `&&`): no
+    // short-circuit, no second branch -- the reject and the "is this a
+    // post-only order" checks collapse into one predicted-unlikely branch,
+    // so the overwhelmingly common post_only == false callers pay for
+    // exactly one extra AND instruction and nothing else.
     // ========================================================================
     template <typename TradeHandler>
     LOB_FORCE_INLINE OrderId new_order(Side side, Price price, Qty qty,
-                                       TradeHandler&& on_trade) noexcept {
+                                       TradeHandler&& on_trade,
+                                       bool post_only = false) noexcept {
         const std::size_t idx = static_cast<std::size_t>(price - base_);
         if (LOB_UNLIKELY(idx >= NumTicks || qty <= 0)) return 0;
 
         if (side == Side::Buy) {
+            const bool crosses = best_ask_ <= idx;
+            if (LOB_UNLIKELY(post_only & crosses)) return 0;   // maker-only reject
             // ---- match against asks priced <= our limit ----
             while (LOB_LIKELY(qty > 0) && best_ask_ <= idx) {
                 qty = sweep_level<Side::Sell>(best_ask_, qty, on_trade);
@@ -149,6 +163,8 @@ public:
             // ---- rest the remainder on the bid side ----
             return rest<Side::Buy>(idx, price, qty);
         } else {
+            const bool crosses = best_bid_ != NPOS && best_bid_ >= idx;
+            if (LOB_UNLIKELY(post_only & crosses)) return 0;   // maker-only reject
             // ---- match against bids priced >= our limit ----
             while (LOB_LIKELY(qty > 0) &&
                    best_bid_ != NPOS && best_bid_ >= idx) {
@@ -156,6 +172,36 @@ public:
             }
             if (qty == 0) return TAKER_FILLED_ID;
             return rest<Side::Sell>(idx, price, qty);
+        }
+    }
+
+    // ========================================================================
+    // HOT PATH -- new iceberg (reserve) order. `display_qty` is the peak
+    // clip shown to the book; `total_qty` is visible + hidden combined.
+    // The FULL total is available to match immediately on arrival (an
+    // aggressor can sweep through the hidden reserve just like a real
+    // exchange iceberg) -- only the RESTING remainder is capped to the
+    // display size, with the rest parked in hidden_qty for reload.
+    // ========================================================================
+    template <typename TradeHandler>
+    LOB_FORCE_INLINE OrderId new_iceberg_order(Side side, Price price,
+                                               Qty display_qty, Qty total_qty,
+                                               TradeHandler&& on_trade) noexcept {
+        const std::size_t idx = static_cast<std::size_t>(price - base_);
+        if (LOB_UNLIKELY(idx >= NumTicks || total_qty <= 0 || display_qty <= 0))
+            return 0;
+
+        Qty qty = total_qty;
+        if (side == Side::Buy) {
+            while (LOB_LIKELY(qty > 0) && best_ask_ <= idx)
+                qty = sweep_level<Side::Sell>(best_ask_, qty, on_trade);
+            if (qty == 0) return TAKER_FILLED_ID;
+            return rest_iceberg<Side::Buy>(idx, price, display_qty, qty);
+        } else {
+            while (LOB_LIKELY(qty > 0) && best_bid_ != NPOS && best_bid_ >= idx)
+                qty = sweep_level<Side::Buy>(best_bid_, qty, on_trade);
+            if (qty == 0) return TAKER_FILLED_ID;
+            return rest_iceberg<Side::Sell>(idx, price, display_qty, qty);
         }
     }
 
@@ -262,7 +308,21 @@ private:
     // ------------------------------------------------------------------
     // Fill `qty` against resting orders at level `idx` (side = MakerSide).
     // Returns the taker quantity still open. Pops fully-filled makers off
-    // the FIFO head and recycles them into the arena.
+    // the FIFO head and recycles them into the arena -- UNLESS a maker is
+    // an iceberg with reserve left, in which case it reloads and rejoins
+    // the queue at the back (see reload splice below).
+    //
+    // The main loop deliberately does NOT touch lvl.head/lvl.tail per
+    // iteration (that would be an unlink per fill); it walks a local `o`
+    // and the real head/tail are fixed up once, after the loop, exactly
+    // as before. Iceberg reloads break that "fix up once" shape because a
+    // reloaded order must be spliced onto the CURRENT tail while the
+    // front of the same list is still being consumed -- so reloaded
+    // makers are collected into a small local chain (reload_head/_tail,
+    // linked through the same next/prev fields, no extra storage) and
+    // spliced onto the real tail in one shot after the sweep loop exits.
+    // This keeps the hot (non-iceberg) path completely unchanged: the
+    // reload chain costs nothing when it stays empty.
     // ------------------------------------------------------------------
     template <Side MakerSide, typename TradeHandler>
     LOB_FORCE_INLINE Qty sweep_level(std::size_t idx, Qty qty,
@@ -271,6 +331,9 @@ private:
         Order* o = lvl.head;
         const Price px = base_ + static_cast<Price>(idx);
 
+        Order* reload_head = nullptr;   // local FIFO of makers reloaded THIS sweep
+        Order* reload_tail = nullptr;   // (icebergs replenished mid-fill)
+
         while (o != nullptr && qty > 0) {
             const Qty fill = o->qty < qty ? o->qty : qty;   // branchless CMOV
             qty          -= fill;
@@ -278,13 +341,46 @@ private:
             lvl.total_qty -= fill;
             on_trade(Trade{o->id, 0, px, fill});
 
-            if (o->qty == 0) {                 // maker exhausted: pop head
+            if (o->qty == 0) {                 // visible clip exhausted
                 Order* nxt = o->next;
-                ++generations_[pool_.index_of(o)];   // invalidate maker's id
-                pool_.release(o);
+                if (LOB_UNLIKELY(o->hidden_qty > 0)) {
+                    // ICEBERG RELOAD: refill the visible clip from the
+                    // hidden reserve. The order is NOT released -- it
+                    // moves to reload_tail, forfeiting time priority to
+                    // every order still resting at this level (including
+                    // `nxt` onward, not yet touched by this sweep).
+                    const Qty refill = o->display_qty < o->hidden_qty
+                                            ? o->display_qty : o->hidden_qty;
+                    o->qty         = refill;
+                    o->hidden_qty -= refill;
+                    lvl.total_qty += refill;    // reappears in aggregate size
+                    o->next = nullptr;
+                    o->prev = reload_tail;
+                    (reload_tail ? reload_tail->next : reload_head) = o;
+                    reload_tail = o;
+                } else {
+                    ++generations_[pool_.index_of(o)];   // invalidate maker's id
+                    pool_.release(o);
+                }
                 o = nxt;
             }
             // else: maker partially filled => taker must be done (qty==0)
+        }
+
+        if (LOB_UNLIKELY(reload_head != nullptr)) {
+            // Splice the reload chain onto the true back of the queue.
+            if (o != nullptr) {             // untouched real orders remain
+                reload_head->prev = lvl.tail;
+                lvl.tail->next    = reload_head;
+                lvl.tail          = reload_tail;
+                o->prev           = nullptr;
+                lvl.head          = o;
+            } else {                        // reloaded makers are all that's left
+                lvl.head = reload_head;
+                lvl.tail = reload_tail;
+                // Level is NOT empty: bitmap bit and cached best stay set.
+            }
+            return qty;
         }
 
         lvl.head = o;
@@ -327,6 +423,43 @@ private:
         if (lvl.tail) lvl.tail->next = o; else lvl.head = o;
         lvl.tail = o;
         lvl.total_qty += qty;
+
+        if constexpr (S == Side::Buy) {
+            bids_.set(idx);
+            if (best_bid_ == NPOS || idx > best_bid_) best_bid_ = idx;
+        } else {
+            asks_.set(idx);
+            if (idx < best_ask_) best_ask_ = idx;
+        }
+        return id;
+    }
+
+    // ------------------------------------------------------------------
+    // Rest the unfilled remainder of an iceberg order. Identical shape to
+    // rest<S>() (arena acquire, id mint, FIFO append, bitmap/best update)
+    // plus splitting `remaining` into a display-capped visible clip and
+    // a hidden reserve.
+    // ------------------------------------------------------------------
+    template <Side S>
+    LOB_FORCE_INLINE OrderId rest_iceberg(std::size_t idx, Price price,
+                                          Qty display_qty, Qty remaining) noexcept {
+        Order* o = pool_.acquire();
+        if (LOB_UNLIKELY(o == nullptr)) return 0;   // arena exhausted: reject
+
+        const std::size_t slot = pool_.index_of(o);
+        const OrderId id =
+            (static_cast<OrderId>(++generations_[slot]) << 32) |
+            static_cast<OrderId>(slot + 1);
+        const Qty visible = display_qty < remaining ? display_qty : remaining;
+        o->init(id, S, price, visible);
+        o->display_qty = display_qty;
+        o->hidden_qty  = remaining - visible;
+
+        PriceLevel& lvl = levels_[idx];
+        o->prev = lvl.tail;
+        if (lvl.tail) lvl.tail->next = o; else lvl.head = o;
+        lvl.tail = o;
+        lvl.total_qty += visible;
 
         if constexpr (S == Side::Buy) {
             bids_.set(idx);

@@ -81,6 +81,11 @@ add_executable(bench_signals bench/bench_signals.cpp)
 target_link_libraries(bench_signals PRIVATE lob)
 target_compile_options(bench_signals PRIVATE ${HOT_FLAGS})
 
+# --- Phase 8: iceberg reload + post-only reject ---
+add_executable(bench_advanced_orders bench/bench_advanced_orders.cpp)
+target_link_libraries(bench_advanced_orders PRIVATE lob)
+target_compile_options(bench_advanced_orders PRIVATE ${HOT_FLAGS})
+
 if(NOT MSVC)
     find_package(Threads REQUIRED)
     target_link_libraries(test_correctness PRIVATE Threads::Threads)
@@ -99,6 +104,7 @@ if(NOT MSVC)
         target_link_options(bench_zero_copy PRIVATE -static)
         target_link_options(bench_trading_loop PRIVATE -static)
         target_link_options(bench_risk PRIVATE -static)
+        target_link_options(bench_advanced_orders PRIVATE -static)
     endif()
 endif()
 
