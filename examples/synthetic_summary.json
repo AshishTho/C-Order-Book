@@ -1,0 +1,65 @@
+{
+  "data_kind": "synthetic",
+  "warning": "Toy fixture accounting check, not a market result or alpha claim",
+  "events": 10000,
+  "seed": 42,
+  "config": {
+    "train_fraction": 0.6,
+    "horizon": 10,
+    "delay": 1,
+    "threshold_quantile": 0.75,
+    "fee_ticks": 0.1,
+    "slippage_ticks": 0.0,
+    "order_size": 1,
+    "seed": 42
+  },
+  "split": {
+    "total_observations": 9999,
+    "train_decision_start": 0,
+    "train_decision_stop_exclusive": 5988,
+    "embargo_observations": 11,
+    "test_start": 5999,
+    "test_start_seq": 6001,
+    "latest_train_label_index": 5998,
+    "test_decision_stop_exclusive": 9988
+  },
+  "source_sha256": "4b72ebbea0fe7a773e3ceec6c0f5ea878522d550e58b12ac3a5e1990e460f5a9",
+  "input_bbo_sha256": "9176ea50ace8e90462a98fd1d08536d0e62b33cff22c2364a428f895824aa840",
+  "strategies": {
+    "imbalance": {
+      "net_pnl_ticks_lots": -6156.6,
+      "max_drawdown_ticks_lots": 6253.4,
+      "completed_round_trips": 283,
+      "turnover_lots": 566,
+      "terminal_inventory_lots": 0
+    },
+    "microprice": {
+      "net_pnl_ticks_lots": -6334.4,
+      "max_drawdown_ticks_lots": 6431.2,
+      "completed_round_trips": 282,
+      "turnover_lots": 564,
+      "terminal_inventory_lots": 0
+    },
+    "ofi": {
+      "net_pnl_ticks_lots": -12733.8,
+      "max_drawdown_ticks_lots": 12819.6,
+      "completed_round_trips": 269,
+      "turnover_lots": 538,
+      "terminal_inventory_lots": 0
+    },
+    "random": {
+      "net_pnl_ticks_lots": -9649.8,
+      "max_drawdown_ticks_lots": 9743.5,
+      "completed_round_trips": 284,
+      "turnover_lots": 568,
+      "terminal_inventory_lots": 0
+    },
+    "flat": {
+      "net_pnl_ticks_lots": 0.0,
+      "max_drawdown_ticks_lots": 0.0,
+      "completed_round_trips": 0,
+      "turnover_lots": 0,
+      "terminal_inventory_lots": 0
+    }
+  }
+}

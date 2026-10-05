@@ -4,17 +4,16 @@
 //
 // WHAT / WHY
 // ----------
-// The mandatory (SEC 15c3-5 "market access rule") checkpoint between a
-// strategy and the exchange-facing gateway. EVERY outbound order passes
-// through check() before it may enter the order ring:
+// A simulation of a checkpoint between a strategy and an exchange-facing
+// gateway. It is not a complete regulatory market-access control system.
+// Every outbound order passes through check() before entering the order ring:
 //
 //     strategy decide -> RiskGateway::check() -> SPSC order ring -> engine
 //
-// A risk gateway that adds 100ns wipes out most of an 841ns tick-to-trade
-// budget's edge, so the whole design is organised around ONE goal: the
-// ACCEPT path (>99.99% of traffic) must cost a handful of nanoseconds.
+// All checks and report updates are bounded O(1). Measure their cost on the
+// target machine; historical benchmark numbers are not latency guarantees.
 //
-// HOW IT STAYS UNDER 20ns
+// DESIGN
 // -----------------------
 // * SINGLE-THREADED BY DESIGN. The gateway lives ON the strategy thread,
 //   in front of the ring. One owner => plain loads/stores, no atomics, no
@@ -22,14 +21,9 @@
 //   gateway; firm-wide aggregation belongs on a slow-path supervisor that
 //   samples per-thread counters -- never on the order path.)
 //
-// * BRANCH-FREE VERDICT ACCUMULATION. Every check computes a 0/1 condition
-//   with pure integer ops and ORs a reason bit into a mask -- no chain of
-//   if/return. There is exactly ONE conditional branch in check(), the
-//   final "mask == 0", and it is virtually always ACCEPT: the predictor
-//   pins it and rejects (the rare mispredict) are the case where an extra
-//   ~15ns is completely acceptable. A rejected order also gets the FULL
-//   reason mask (all failed checks, not just the first) for the drop-copy
-//   log -- for free.
+// * VERDICT ACCUMULATION reports every violated check in one reason mask.
+//   Exposure arithmetic uses unsigned intermediates so malformed quantities
+//   cannot overflow signed counters before their rejection is recorded.
 //
 // * CACHE-LOCAL STATE, SPLIT BY MUTABILITY. Line 1: read-only limits
 //   (loaded once, then always L1-hot, never invalidated because nothing
@@ -60,6 +54,7 @@
 // ============================================================================
 
 #include "common.hpp"
+#include <limits>
 
 namespace lob {
 
@@ -72,6 +67,9 @@ enum RiskReject : std::uint32_t {
     RJ_PRICE_BAND = 1u << 1,   // price collar: outside [px_lo, px_hi]
     RJ_POSITION   = 1u << 2,   // worst-case open exposure would breach limit
     RJ_RATE       = 1u << 3,   // > W accepted messages inside the window
+    RJ_SIDE       = 1u << 4,   // side is neither Buy nor Sell
+    RJ_CLOCK      = 1u << 5,   // timestamp predates the last accepted order
+    RJ_CONFIG     = 1u << 6,   // invalid quantity, position or collar limits
 };
 
 // ---------------------------------------------------------------------------
@@ -81,7 +79,7 @@ enum RiskReject : std::uint32_t {
 // ---------------------------------------------------------------------------
 template <std::size_t RateWindowMsgs = 256>
 class RiskGateway {
-    static_assert((RateWindowMsgs & (RateWindowMsgs - 1)) == 0,
+    static_assert(RateWindowMsgs > 0 && (RateWindowMsgs & (RateWindowMsgs - 1)) == 0,
                   "window depth must be a power of two");
     static constexpr std::uint64_t MASK = RateWindowMsgs - 1;
 
@@ -96,7 +94,9 @@ public:
 
     // ========================================================================
     // HOT PATH -- gate one order. Returns RJ_NONE (accept, state updated)
-    // or the OR of every violated check (reject, state untouched).
+    // or the OR of every violated check (reject, only rejected_ changes).
+    // now must be monotonic; timestamp zero is valid. A zero window disables
+    // rate throttling while preserving timestamp validation.
     // `now` = caller's RDTSC read (the strategy already has one in hand for
     // its tick-to-trade stamp -- reuse it, don't pay for another).
     // ========================================================================
@@ -106,25 +106,39 @@ public:
         std::uint32_t rj = 0;
         rj |= RJ_QTY        * std::uint32_t((qty <= 0) | (qty > max_qty_));
         rj |= RJ_PRICE_BAND * std::uint32_t((price < px_lo_) | (price > px_hi_));
+        rj |= RJ_SIDE       * std::uint32_t(!valid_side(side));
+        rj |= RJ_CONFIG     * std::uint32_t(max_qty_ <= 0 || pos_limit_ < 0 ||
+                                           px_lo_ > px_hi_);
 
         // ---- worst-case exposure if this order rests and fills ----
-        // is_buy as an integer steers the qty to one side with multiplies
-        // instead of a data-dependent branch the predictor can't learn.
-        const Qty is_buy = Qty(side == Side::Buy);
-        const Qty pb = open_buy_  + qty * is_buy;         // prospective buys
-        const Qty ps = open_sell_ + qty * (Qty(1) - is_buy);
-        rj |= RJ_POSITION * std::uint32_t((pb + net_pos_  >  pos_limit_) |
-                                          (ps - net_pos_  >  pos_limit_));
+        // Each operand is <= INT64_MAX, so these unsigned sums cannot wrap.
+        // Modular subtraction expresses limit +/- signed net position even
+        // when the valid headroom exceeds INT64_MAX.
+        const auto positive_qty = static_cast<std::uint64_t>(qty > 0 ? qty : 0);
+        const auto pb = static_cast<std::uint64_t>(open_buy_) +
+                        positive_qty * std::uint64_t(side == Side::Buy);
+        const auto ps = static_cast<std::uint64_t>(open_sell_) +
+                        positive_qty * std::uint64_t(side == Side::Sell);
+        const auto buy_limit = static_cast<std::uint64_t>(pos_limit_) -
+                               static_cast<std::uint64_t>(net_pos_);
+        const auto sell_limit = static_cast<std::uint64_t>(pos_limit_) +
+                                static_cast<std::uint64_t>(net_pos_);
+        const auto qty_max = static_cast<std::uint64_t>(std::numeric_limits<Qty>::max());
+        rj |= RJ_POSITION * std::uint32_t(pb > buy_limit || ps > sell_limit ||
+                                          pb > qty_max || ps > qty_max);
 
         // ---- exact sliding window: W-th previous accept still inside? ----
-        rj |= RJ_RATE * std::uint32_t(now - stamps_[n_sent_ & MASK]
-                                          < window_ticks_);
+        rj |= RJ_RATE * std::uint32_t(stamp_count_ == RateWindowMsgs &&
+                                     now - stamps_[n_sent_ & MASK] < window_ticks_);
+        rj |= RJ_CLOCK * std::uint32_t(stamp_count_ != 0 &&
+                                      now < stamps_[(n_sent_ - 1) & MASK]);
 
-        // ---- the ONE branch: overwhelmingly ACCEPT, statically predicted ----
+        // ---- Commit exposure and rate state only on acceptance. ----
         if (LOB_LIKELY(rj == 0)) {
-            open_buy_  = pb;
-            open_sell_ = ps;
+            open_buy_  = static_cast<Qty>(pb);
+            open_sell_ = static_cast<Qty>(ps);
             stamps_[n_sent_++ & MASK] = now;
+            if (stamp_count_ < RateWindowMsgs) ++stamp_count_;
         } else {
             ++rejected_;
         }
@@ -134,18 +148,22 @@ public:
     // ------------------------------------------------------------------
     // HOT PATH -- exposure bookkeeping (cancel-and-replace / exec reports).
     // ------------------------------------------------------------------
-    // A resting order (or remainder) was pulled: open exposure shrinks.
-    LOB_FORCE_INLINE void on_cancel(Side side, Qty qty) noexcept {
-        const Qty is_buy = Qty(side == Side::Buy);
-        open_buy_  -= qty * is_buy;
-        open_sell_ -= qty * (Qty(1) - is_buy);
+    // Invalid reports fail without changing state. The caller must correlate
+    // and deduplicate reports by order ID; aggregate counters cannot do so.
+    // Call on_cancel after an acknowledged cancel or an engine rejection of
+    // an already-admitted order to release its reserved exposure.
+    LOB_FORCE_INLINE bool on_cancel(Side side, Qty qty) noexcept {
+        if (LOB_UNLIKELY(!valid_report(side, qty))) return false;
+        (side == Side::Buy ? open_buy_ : open_sell_) -= qty;
+        return true;
     }
     // A resting order filled: open exposure converts to realised position.
-    LOB_FORCE_INLINE void on_fill(Side side, Qty qty) noexcept {
-        const Qty is_buy = Qty(side == Side::Buy);
-        open_buy_  -= qty * is_buy;
-        open_sell_ -= qty * (Qty(1) - is_buy);
-        net_pos_   += qty * (2 * is_buy - 1);      // +buys, -sells
+    LOB_FORCE_INLINE bool on_fill(Side side, Qty qty) noexcept {
+        if (LOB_UNLIKELY(!valid_report(side, qty))) return false;
+        (side == Side::Buy ? open_buy_ : open_sell_) -= qty;
+        // Accepted worst-case exposure bounds this result within pos_limit_.
+        if (side == Side::Buy) net_pos_ += qty; else net_pos_ -= qty;
+        return true;
     }
 
     // ---- observers (slow path / supervision) ----
@@ -156,6 +174,14 @@ public:
     std::uint64_t rejected()     const noexcept { return rejected_; }
 
 private:
+    static constexpr bool valid_side(Side side) noexcept {
+        return side == Side::Buy || side == Side::Sell;
+    }
+    LOB_FORCE_INLINE bool valid_report(Side side, Qty qty) const noexcept {
+        return valid_side(side) && qty > 0 &&
+               qty <= (side == Side::Buy ? open_buy_ : open_sell_);
+    }
+
     // --- line 1: READ-ONLY limits. Never written after construction, so
     //     this line lives in every relevant L1 in Shared state forever. ---
     alignas(CACHE_LINE) const Qty  max_qty_;
@@ -169,6 +195,7 @@ private:
     Qty                            net_pos_   = 0;   // realised fills, signed
     std::uint64_t                  n_sent_    = 0;   // accepts (rate index)
     std::uint64_t                  rejected_  = 0;
+    std::size_t                    stamp_count_ = 0; // saturates at ring depth
 
     // --- rate window: last W accept stamps, AND-indexed ring ---
     alignas(CACHE_LINE) std::uint64_t stamps_[RateWindowMsgs];

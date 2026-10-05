@@ -59,44 +59,39 @@ static bool correctness(double) {
 
     const Price B = BASE + 1000, A = BASE + 1010;
 
-    // t1: opening bid 10 lots. priors {-1,-1,0,0}: e = 1*10 - 0 - 1*0 + 1*0
-    //     = +10. micro: ask side empty => (B*0 + (-1)*10)<<8 / 10 ... ask
-    //     px is -1 sentinel: micro = (-10<<8)/10 = -256 (garbage by design:
-    //     one-sided books have no micro-price; consumers gate on px >= 0).
+    // t1: opening bid contributes +10; a one-sided microprice is unavailable.
     book.new_order(Side::Buy, B, 10, none);
     pub.on_message_applied(1);
-    expect("open bid 10", 10, ((B * 0 + (-1) * 10) << 8) / 10);
+    expect("open bid 10", 10, -1);
 
-    // t2: opening ask 30. Bid unchanged (equal px: +10 -10 = 0). Ask
-    //     priors {-1, 0}: A <= -1 false (no -qa term), A >= -1 true but
-    //     qa' = 0. e = 0. cum = 10. micro = (B*30 + A*10)<<8 / 40.
+    // t2: opening ask contributes -30; cumulative OFI is -20.
     book.new_order(Side::Sell, A, 30, none);
     pub.on_message_applied(2);
-    expect("open ask 30", 10, ((B * 30 + A * 10) << 8) / 40);
+    expect("open ask 30", -20, ((B * 30 + A * 10) << 8) / 40);
 
     // t3: bid size grows to 25 (join 15 at same px).
-    //     e = 25 - 10 (equal px, both bid indicators) = +15. cum = 25.
+    //     e = 25 - 10 (equal px, both bid indicators) = +15. cum = -5.
     book.new_order(Side::Buy, B, 15, none);
     pub.on_message_applied(3);
-    expect("bid join +15 (qty 25)", 25, ((B * 30 + A * 25) << 8) / 55);
+    expect("bid join +15 (qty 25)", -5, ((B * 30 + A * 25) << 8) / 55);
 
     // t4: better bid appears at B+2, 7 lots. Pb rises:
-    //     e = +7 (only the >= indicator fires). cum = 32.
+    //     e = +7 (only the >= indicator fires). cum = 2.
     book.new_order(Side::Buy, B + 2, 7, none);
     pub.on_message_applied(4);
-    expect("bid improves +2 ticks, 7", 32, (((B + 2) * 30 + A * 7) << 8) / 37);
+    expect("bid improves +2 ticks, 7", 2, (((B + 2) * 30 + A * 7) << 8) / 37);
 
-    // t5: ask improves to A-3, 5 lots. Pa falls: e = -qa = -5. cum = 27.
+    // t5: ask improves to A-3, 5 lots. Pa falls: e = -qa = -5. cum = -3.
     book.new_order(Side::Sell, A - 3, 5, none);
     pub.on_message_applied(5);
-    expect("ask improves -3 ticks, 5", 27,
+    expect("ask improves -3 ticks, 5", -3,
            (((B + 2) * 5 + (A - 3) * 7) << 8) / 12);
 
     // t6: aggressive sell 7 lots sweeps the best bid level (B+2 empties,
-    //     top reverts to B qty 25). Pb falls: e = -qb' = -7. cum = 20.
+    //     top reverts to B qty 25). Pb falls: e = -qb' = -7. cum = -10.
     book.new_order(Side::Sell, B + 2, 7, none);
     pub.on_message_applied(6);
-    expect("bid swept, top back to B", 20,
+    expect("bid swept, top back to B", -10,
            ((B * 5 + (A - 3) * 25) << 8) / 30);
 
     std::printf("  cumulative OFI from publisher: %lld   %s\n",
@@ -185,6 +180,7 @@ int main() {
         constexpr std::size_t N = 10'000'000;
         Rng r(0x0F1ull);
         std::int64_t ofi = 0, acc = 0;
+        std::uint64_t saturations = 0;
         Price lbp = BASE, lap = BASE + 10;
         Qty   lbq = 50,   laq = 50;
         const std::uint64_t c0 = tsc_begin();
@@ -194,14 +190,15 @@ int main() {
             const Price ap = BASE + 32 + Price((v >> 8) & 31);
             const Qty   bq = 1 + Qty((v >> 16) & 255);
             const Qty   aq = 1 + Qty((v >> 24) & 255);
-            ofi += Qty(bp >= lbp) * bq - Qty(bp <= lbp) * lbq
-                 - Qty(ap <= lap) * aq + Qty(ap >= lap) * laq;
-            const Qty d = bq + aq;
-            acc += ((bp * aq + ap * bq) << 8) / (d + Qty(d == 0));
+            const auto delta = signal_detail::saturated_add(
+                signal_detail::bid_flow(bp, bq, lbp, lbq),
+                signal_detail::ask_flow(ap, aq, lap, laq), saturations);
+            ofi = signal_detail::saturated_add(ofi, delta, saturations);
+            acc += weighted_midpoint_q8(bp, ap, bq, aq);
             lbp = bp; lap = ap; lbq = bq; laq = aq;
         }
         const std::uint64_t c1 = tsc_end();
-        g_sink = std::uint64_t(ofi) ^ std::uint64_t(acc);
+        g_sink = std::uint64_t(ofi) ^ std::uint64_t(acc) ^ saturations;
         std::printf("\n== SIGNAL MATH MICROCOST (batched x%zu) ==\n"
                     "  OFI + micro-price: %.2f cycles (%.2f ns) per top-of-"
                     "book change\n", N,

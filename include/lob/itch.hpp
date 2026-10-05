@@ -1,44 +1,11 @@
 #pragma once
-// ============================================================================
-// itch.hpp -- NASDAQ ITCH 5.0 binary feed: wire structs + zero-copy parser.
-//
-// WIRE FORMAT
-// -----------
-// We consume the standard NASDAQ "BinaryFILE" / SoupBinTCP-style framing:
-// each message is prefixed by a 2-byte BIG-ENDIAN length, followed by the
-// raw ITCH payload. Supported message types (all lengths per the official
-// ITCH 5.0 spec):
-//
-//     'A'  Add Order (no MPID)        36 bytes
-//     'E'  Order Executed             31 bytes
-//     'X'  Order Cancel (partial)     23 bytes
-//     'D'  Order Delete (full)        19 bytes
-//
-// ZERO-COPY DESIGN
-// ----------------
-// * The parser NEVER copies payload bytes, never allocates, and never
-//   materialises intermediary objects. It hands the caller a `const&` to a
-//   #pragma pack(1) struct reinterpret_cast'ed DIRECTLY over the network
-//   buffer. The only data movement is the caller loading the 3-4 fields it
-//   actually needs into registers.
-//
-// * #pragma pack(push, 1): ITCH fields are unaligned on the wire (e.g. the
-//   64-bit order reference starts at byte offset 11). pack(1) makes the C++
-//   struct layout byte-identical to the wire layout so offsets need no
-//   arithmetic. x86 handles the resulting unaligned register loads natively
-//   (a MOV on a split cache line costs ~1 extra cycle -- irrelevant).
-//
-// * ENDIANNESS: ITCH is big-endian; x86 is little-endian. Every integer
-//   field goes through a single-instruction byte swap (BSWAP/MOVBE via
-//   __builtin_bswapNN / _byteswap_*). No shifting-and-masking loops.
-//
-// * Strict-aliasing note: casting a byte buffer to a struct and reading it
-//   is the universal idiom for wire decoding; GCC/Clang/MSVC all compile it
-//   to the intended raw loads for char-backed buffers. The structs are
-//   trivially-copyable PODs, which is what makes this well-behaved.
-// ============================================================================
+// NASDAQ ITCH 5.0 A/E/X/D subset with 2-byte big-endian BinaryFILE framing.
+// SoupBinTCP packet headers are NOT supported. Decoding is allocation-free.
+// Payloads are copied into typed local objects to respect C++ object lifetime
+// and alignment rules; sink references are valid only for that invocation.
 
 #include "common.hpp"
+#include <cstring>
 
 #if defined(_MSC_VER)
 #  include <cstdlib>   // _byteswap_ushort / _ulong / _uint64
@@ -73,7 +40,7 @@ LOB_FORCE_INLINE std::uint64_t bswap(std::uint64_t v) noexcept {
 
 // Pointer-based big-endian load (used for the 2-byte framing prefix).
 LOB_FORCE_INLINE std::uint16_t load_be16(const std::byte* p) noexcept {
-    return bswap(*reinterpret_cast<const std::uint16_t*>(p));
+    return (std::uint16_t(p[0]) << 8) | std::uint16_t(p[1]);
 }
 
 // ---------------------------------------------------------------------------
@@ -135,69 +102,81 @@ LOB_FORCE_INLINE std::uint64_t timestamp_ns(const MsgHeader& h) noexcept {
             std::uint64_t(h.timestamp[5]);
 }
 
-// ---------------------------------------------------------------------------
-// ItchParser -- a zero-copy cursor over a length-framed ITCH byte stream
-// (e.g. an mmap'ed capture file or a kernel-bypass NIC ring).
-//
-// Usage (hot path):
-//     ItchParser p(data, len);
-//     while (p.next(sink)) {}
-//
-// `sink` is any object with operator() overloads for the four wire structs;
-// it is a template parameter, so dispatch is fully inlined -- no virtual
-// calls, no std::function, no allocation. The struct references passed to
-// the sink point INTO the source buffer and are valid only during the call
-// (the sink must copy out the few fields it needs -- into registers).
-// ---------------------------------------------------------------------------
+enum class ParseStatus {
+    Ready, End, NullInput, TruncatedLength, EmptyFrame, TruncatedPayload,
+    InvalidLength, UnsupportedType
+};
+
+inline const char* status_name(ParseStatus status) noexcept {
+    switch (status) {
+    case ParseStatus::Ready: return "ready";
+    case ParseStatus::End: return "end of stream";
+    case ParseStatus::NullInput: return "null input with nonzero length";
+    case ParseStatus::TruncatedLength: return "truncated frame length";
+    case ParseStatus::EmptyFrame: return "zero-length frame";
+    case ParseStatus::TruncatedPayload: return "truncated frame payload";
+    case ParseStatus::InvalidLength: return "invalid payload length for message type";
+    case ParseStatus::UnsupportedType: return "unsupported ITCH message type";
+    }
+    return "unknown parser status";
+}
+
+// A strict subset parser: unknown message types fail explicitly. A production
+// historical feed needs additional message types and transport/session logic.
+// Framing validation belongs here; semantic validation belongs in the sink.
 class ItchParser {
 public:
     ItchParser(const std::byte* data, std::size_t len) noexcept
-        : cur_(data), end_(data + len) {}
+        : data_(data), len_(len), status_(data || len == 0
+              ? ParseStatus::Ready : ParseStatus::NullInput) {}
 
-    // Decode one message and feed it to the sink. Returns false at end of
-    // stream (or on a malformed/unknown frame, which halts the session --
-    // in production a desync on a TCP-style stream is unrecoverable anyway).
     template <typename Sink>
     LOB_FORCE_INLINE bool next(Sink&& sink) noexcept {
-        // Framing: 2-byte big-endian payload length.
-        if (LOB_UNLIKELY(cur_ + 2 > end_)) return false;
-        const std::uint16_t len = load_be16(cur_);
-        const std::byte* p = cur_ + 2;
-        if (LOB_UNLIKELY(p + len > end_)) return false;
-
-        // ZERO-COPY: overlay the wire struct straight onto the buffer.
-        // The switch compiles to a jump table; each arm is a single
-        // reinterpret_cast (free) + the sink body (inlined).
-        switch (static_cast<char>(*p)) {
-        case 'A':
-            if (LOB_UNLIKELY(len != sizeof(AddOrder))) return false;
-            sink(*reinterpret_cast<const AddOrder*>(p));
-            break;
-        case 'E':
-            if (LOB_UNLIKELY(len != sizeof(OrderExecuted))) return false;
-            sink(*reinterpret_cast<const OrderExecuted*>(p));
-            break;
-        case 'X':
-            if (LOB_UNLIKELY(len != sizeof(OrderCancel))) return false;
-            sink(*reinterpret_cast<const OrderCancel*>(p));
-            break;
-        case 'D':
-            if (LOB_UNLIKELY(len != sizeof(OrderDelete))) return false;
-            sink(*reinterpret_cast<const OrderDelete*>(p));
-            break;
-        default:
-            return false;             // unknown type: stop (stream desync)
+        if (status_ != ParseStatus::Ready) return false;
+        const std::size_t remaining = len_ - offset_;
+        if (remaining == 0) return fail(ParseStatus::End);
+        if (remaining < 2) return fail(ParseStatus::TruncatedLength);
+        const auto len = load_be16(data_ + offset_);
+        if (len == 0) return fail(ParseStatus::EmptyFrame);
+        if (len > remaining - 2) return fail(ParseStatus::TruncatedPayload);
+        const std::byte* p = data_ + offset_ + 2;
+        message_type_ = static_cast<char>(*p);
+        bool decoded = false;
+        switch (message_type_) {
+        case 'A': decoded = dispatch<AddOrder>(p, len, sink); break;
+        case 'E': decoded = dispatch<OrderExecuted>(p, len, sink); break;
+        case 'X': decoded = dispatch<OrderCancel>(p, len, sink); break;
+        case 'D': decoded = dispatch<OrderDelete>(p, len, sink); break;
+        default: return fail(ParseStatus::UnsupportedType);
         }
-        cur_ = p + len;
+        if (!decoded) return fail(ParseStatus::InvalidLength);
+        offset_ += std::size_t(len) + 2;
         return true;
     }
 
-    LOB_FORCE_INLINE bool exhausted() const noexcept { return cur_ >= end_; }
-    LOB_FORCE_INLINE const std::byte* cursor() const noexcept { return cur_; }
+    bool exhausted() const noexcept { return offset_ == len_ && data_valid(); }
+    const std::byte* cursor() const noexcept { return data_ ? data_ + offset_ : nullptr; }
+    std::size_t offset() const noexcept { return offset_; }
+    ParseStatus status() const noexcept { return status_; }
+    char message_type() const noexcept { return message_type_; }
 
 private:
-    const std::byte* cur_;
-    const std::byte* end_;
+    template <typename Message, typename Sink>
+    static LOB_FORCE_INLINE bool dispatch(const std::byte* p, std::uint16_t len,
+                                         Sink& sink) noexcept {
+        if (len != sizeof(Message)) return false;
+        Message message;
+        std::memcpy(&message, p, sizeof(message));
+        sink(message);
+        return true;
+    }
+    bool fail(ParseStatus status) noexcept { status_ = status; return false; }
+    bool data_valid() const noexcept { return data_ != nullptr || len_ == 0; }
+    const std::byte* data_;
+    std::size_t len_;
+    std::size_t offset_ = 0;
+    ParseStatus status_;
+    char message_type_ = '\0';
 };
 
 } // namespace lob::itch

@@ -9,11 +9,15 @@
 #include "lob/level_bitmap.hpp"
 #include "lob/memory_pool.hpp"
 #include "lob/itch.hpp"
+#include "lob/risk.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 #include <thread>
+#include <algorithm>
+#include <limits>
+#include <random>
 
 #define CHECK(cond)                                                          \
     do {                                                                     \
@@ -222,6 +226,257 @@ static void test_reduce() {
     std::puts("  reduce ............. OK");
 }
 
+// Boundary inputs must be rejected before touching arena storage or doing
+// signed arithmetic. These cases are also exercised in the sanitizer build.
+static void test_book_invalid_inputs() {
+    Book book(BASE);
+    g_trades.clear();
+    constexpr Qty QMAX = std::numeric_limits<Qty>::max();
+    constexpr Price PMIN = std::numeric_limits<Price>::min();
+    constexpr Price PMAX = std::numeric_limits<Price>::max();
+    const auto invalid_side = static_cast<Side>(255);
+    CHECK(!book.cancel(1));                  // never-allocated slot, generation 0
+    CHECK(book.reduce(1, 1) == 0);
+    CHECK(book.execute(1, 1) == 0);
+    CHECK(!book.cancel(0));
+    CHECK(!book.cancel(~OrderId{0}));
+    CHECK(book.new_order(invalid_side, BASE, 1, collect) == 0);
+    CHECK(book.new_iceberg_order(invalid_side, BASE, 1, 2, collect) == 0);
+    CHECK(book.new_order(Side::Buy, PMIN, 1, collect) == 0);
+    CHECK(book.new_order(Side::Buy, PMAX, 1, collect) == 0);
+    CHECK(book.new_order(Side::Buy, BASE, 0, collect) == 0);
+    CHECK(book.new_order(Side::Buy, BASE, -1, collect) == 0);
+    CHECK(book.new_iceberg_order(Side::Buy, BASE, 0, 1, collect) == 0);
+    CHECK(book.level_qty(PMIN) == 0 && book.level_qty(PMAX) == 0);
+
+    const auto id = book.new_order(Side::Buy, BASE, 10, collect);
+    CHECK(book.reduce(id, -1) == 0);
+    CHECK(book.reduce(id, std::numeric_limits<Qty>::min()) == 0);
+    CHECK(book.execute(id, 0) == 0);
+    CHECK(book.level_qty(BASE) == 10);
+    CHECK(book.cancel(id));
+    const auto dead_generation = id + (OrderId{1} << 32);
+    CHECK(!book.cancel(dead_generation));   // forged current, but dead, generation
+    CHECK(book.reduce(dead_generation, 1) == 0);
+    CHECK(book.execute(dead_generation, 1) == 0);
+
+    const auto huge = book.new_order(Side::Buy, BASE, QMAX, collect);
+    CHECK(huge != 0);
+    CHECK(book.new_order(Side::Buy, BASE, 1, collect) == 0);
+    CHECK(book.new_iceberg_order(Side::Buy, BASE, 1, 2, collect) == 0);
+    CHECK(book.level_qty(BASE) == QMAX);
+    CHECK(book.cancel(huge));
+    const auto reserve = book.new_iceberg_order(Side::Sell, BASE, 1, QMAX, collect);
+    CHECK(reserve != 0);
+    CHECK(book.new_order(Side::Sell, BASE, 1, collect) == 0);
+    CHECK(book.execute(reserve, QMAX - 1) == QMAX - 1);
+    CHECK(book.level_qty(BASE) == 1);
+    CHECK(book.execute(reserve, 1) == 1);
+    CHECK(book.best_ask() == -1);
+
+    // Negative ladder bases and a ladder near INT64_MAX remain defined.
+    Book low(PMIN);
+    CHECK(low.new_order(Side::Buy, PMAX, 1, collect) == 0);
+    CHECK(low.new_order(Side::Buy, PMIN + 1, 1, collect) != 0);
+    CHECK(low.best_bid() == PMIN + 1);
+    Book high(PMAX - 1);
+    CHECK(high.new_order(Side::Buy, PMIN, 1, collect) == 0);
+    CHECK(high.new_order(Side::Buy, PMAX, 1, collect) != 0);
+    CHECK(high.best_bid() == PMAX);
+    CHECK(g_trades.empty());
+    std::puts("  invalid inputs / overflow OK");
+}
+
+static void test_advanced_orders() {
+    for (const Side maker_side : {Side::Buy, Side::Sell}) {
+        const Side taker_side = maker_side == Side::Buy ? Side::Sell : Side::Buy;
+        Book book(BASE);
+        g_trades.clear();
+        const auto ice_a = book.new_iceberg_order(maker_side, BASE + 10, 3, 8, collect);
+        const auto plain = book.new_order(maker_side, BASE + 10, 2, collect);
+        const auto ice_b = book.new_iceberg_order(maker_side, BASE + 10, 2, 5, collect);
+        CHECK(book.level_qty(BASE + 10) == 7);
+        CHECK(book.new_order(taker_side, BASE + 10, 1, collect, true) == 0);
+        CHECK(g_trades.empty() && book.level_qty(BASE + 10) == 7);
+        CHECK(book.new_order(taker_side, BASE + 10, 13, collect) == ~OrderId{0});
+        const OrderId expected_ids[] = {ice_a, plain, ice_b, ice_a, ice_b, ice_a};
+        const Qty expected_qty[] = {3, 2, 2, 3, 2, 1};
+        CHECK(g_trades.size() == 6);
+        for (std::size_t i = 0; i < g_trades.size(); ++i) {
+            CHECK(g_trades[i].maker_id == expected_ids[i]);
+            CHECK(g_trades[i].qty == expected_qty[i]);
+        }
+        CHECK(book.level_qty(BASE + 10) == 2);
+        CHECK(!book.cancel(plain));
+        CHECK(book.cancel(ice_a) && book.cancel(ice_b));
+        CHECK(book.best_bid() == -1 && book.best_ask() == -1);
+
+        // Cancels consume reserve first. Executions consume the displayed
+        // clip first and lose queue priority upon replenishment.
+        const auto ice = book.new_iceberg_order(maker_side, BASE + 20, 5, 20, collect);
+        const auto behind = book.new_order(maker_side, BASE + 20, 2, collect);
+        CHECK(book.reduce(ice, 3) == 3);
+        CHECK(book.level_qty(BASE + 20) == 7);
+        Message execution{};
+        execution.id = ice; execution.qty = 8; execution.type = MsgType::Execute;
+        book.apply(execution, collect);          // remaining 9, visible 2
+        CHECK(book.level_qty(BASE + 20) == 4);
+        g_trades.clear();
+        book.new_order(taker_side, BASE + 20, 2, collect);
+        CHECK(g_trades.size() == 1 && g_trades[0].maker_id == behind);
+        CHECK(book.reduce(ice, 8) == 8);         // hidden 7, then visible 1
+        CHECK(book.level_qty(BASE + 20) == 1);
+        CHECK(book.execute(ice, 100) == 1);
+        CHECK(!book.cancel(ice));
+    }
+    std::puts("  iceberg / post-only OK");
+}
+
+static void test_risk_boundaries() {
+    RiskGateway<4> rate(10, BASE, BASE + 100, 100, 100);
+    for (std::uint64_t now = 0; now < 4; ++now)
+        CHECK(rate.check(Side::Buy, BASE, 1, now) == RJ_NONE);
+    CHECK(rate.check(Side::Buy, BASE, 1, 4) == RJ_RATE);
+    CHECK(rate.accepted() == 4 && rate.open_buy() == 4);
+    CHECK(rate.check(Side::Buy, BASE, 1, 100) == RJ_NONE); // exact expiry boundary
+    CHECK((rate.check(Side::Buy, BASE, 1, 99) & RJ_CLOCK) != 0);
+    CHECK(rate.accepted() == 5 && rate.open_buy() == 5);
+
+    RiskGateway<4> risk(10, BASE, BASE + 100, 10, 0);
+    CHECK(risk.check(Side::Buy, BASE, 8, 0) == RJ_NONE);
+    CHECK(!risk.on_fill(Side::Buy, 9));
+    CHECK(!risk.on_cancel(Side::Buy, -1));
+    CHECK(!risk.on_cancel(static_cast<Side>(2), 1));
+    CHECK(!risk.on_fill(Side::Sell, 1));
+    CHECK(risk.open_buy() == 8 && risk.net_position() == 0);
+    CHECK(risk.on_fill(Side::Buy, 6));
+    CHECK(risk.open_buy() == 2 && risk.net_position() == 6);
+    CHECK(risk.check(Side::Buy, BASE, 3, 1) == RJ_POSITION);
+    CHECK(risk.check(Side::Buy, BASE, 2, 1) == RJ_NONE);
+    CHECK(risk.check(Side::Sell, BASE, 10, 1) == RJ_NONE);
+    CHECK(risk.on_fill(Side::Sell, 10));
+    CHECK(risk.net_position() == -4);
+    CHECK(risk.on_cancel(Side::Buy, 4));
+    CHECK(!risk.on_cancel(Side::Buy, 1));
+    CHECK(risk.check(static_cast<Side>(255), BASE, 1, 1) == RJ_SIDE);
+    CHECK((risk.check(Side::Buy, BASE - 1, -1, 1) & (RJ_QTY | RJ_PRICE_BAND)) ==
+           (RJ_QTY | RJ_PRICE_BAND));
+
+    constexpr Qty QMAX = std::numeric_limits<Qty>::max();
+    RiskGateway<4> huge(QMAX, BASE, BASE, QMAX, 0);
+    CHECK(huge.check(Side::Buy, BASE, QMAX, 0) == RJ_NONE);
+    CHECK(huge.check(Side::Buy, BASE, 1, 0) == RJ_POSITION);
+    CHECK(huge.check(Side::Buy, BASE, std::numeric_limits<Qty>::min(), 0) == RJ_QTY);
+    CHECK(huge.on_fill(Side::Buy, QMAX));
+    CHECK(huge.net_position() == QMAX);
+    CHECK(huge.check(Side::Buy, BASE, 1, 0) == RJ_POSITION);
+    CHECK(huge.check(Side::Sell, BASE, QMAX, 0) == RJ_NONE);
+    CHECK(huge.on_fill(Side::Sell, QMAX));
+    CHECK(huge.check(Side::Sell, BASE, QMAX, 0) == RJ_NONE);
+    CHECK(huge.on_fill(Side::Sell, QMAX));
+    CHECK(huge.net_position() == -QMAX);
+    CHECK(huge.check(Side::Sell, BASE, 1, 0) == RJ_POSITION);
+    CHECK(huge.check(Side::Buy, BASE, QMAX, 0) == RJ_NONE);
+    CHECK(huge.on_fill(Side::Buy, QMAX));
+    CHECK(huge.net_position() == 0);
+
+    RiskGateway<4> invalid(0, BASE + 1, BASE, -1, 0);
+    CHECK((invalid.check(Side::Buy, BASE, 1, 0) & RJ_CONFIG) != 0);
+    CHECK(invalid.accepted() == 0 && invalid.open_buy() == 0);
+    std::puts("  risk boundaries .... OK");
+}
+
+// An intentionally simple vector reference implementation shares none of
+// the optimized book's arena, bitmap or linked-list logic. Every operation
+// compares trades, every price level and BBO; fixed seeds make failures replayable.
+static void test_randomized_reference() {
+    struct RefOrder { OrderId id; Side side; Price price; Qty qty; };
+    constexpr Price WIDTH = 64;
+    for (const std::uint64_t seed : {7ull, 42ull, 20261004ull}) {
+        std::mt19937_64 rng(seed);
+        Book book(BASE);
+        std::vector<RefOrder> orders;
+        std::vector<OrderId> historical_ids;
+        for (int step = 0; step < 12'000; ++step) {
+            g_trades.clear();
+            std::vector<Trade> expected_trades;
+            const auto operation = rng() % 10;
+            if (operation < 6) {
+                const Side side = rng() & 1 ? Side::Buy : Side::Sell;
+                const Price price = BASE + static_cast<Price>(rng() % WIDTH);
+                const Qty qty = 1 + static_cast<Qty>(rng() % 40);
+                const bool post_only = rng() % 7 == 0;
+                auto best_match = [&]() {
+                    std::size_t best = orders.size();
+                    for (std::size_t i = 0; i < orders.size(); ++i) {
+                        const auto& o = orders[i];
+                        if (o.side == side || (side == Side::Buy ? o.price > price : o.price < price))
+                            continue;
+                        if (best == orders.size() || (side == Side::Buy ?
+                            o.price < orders[best].price : o.price > orders[best].price)) best = i;
+                    }
+                    return best;
+                };
+                const bool rejected = post_only && best_match() != orders.size();
+                Qty remaining = qty;
+                while (!rejected && remaining > 0) {
+                    const auto best = best_match();
+                    if (best == orders.size()) break;
+                    auto& maker = orders[best];
+                    const Qty fill = std::min(remaining, maker.qty);
+                    expected_trades.push_back(Trade{maker.id, 0, maker.price, fill});
+                    maker.qty -= fill; remaining -= fill;
+                    if (maker.qty == 0) orders.erase(orders.begin() + best);
+                }
+                const auto id = book.new_order(side, price, qty, collect, post_only);
+                if (rejected) CHECK(id == 0);
+                else if (remaining == 0) CHECK(id == ~OrderId{0});
+                else {
+                    CHECK(id != 0 && id != ~OrderId{0});
+                    orders.push_back({id, side, price, remaining});
+                    historical_ids.push_back(id);
+                }
+            } else {
+                OrderId id = 0;
+                if (!orders.empty() && rng() % 3 != 0)
+                    id = orders[rng() % orders.size()].id;
+                else if (!historical_ids.empty())
+                    id = historical_ids[rng() % historical_ids.size()];
+                const auto it = std::find_if(orders.begin(), orders.end(),
+                                            [id](const RefOrder& o) { return o.id == id; });
+                if (operation == 6) {
+                    CHECK(book.cancel(id) == (it != orders.end()));
+                    if (it != orders.end()) orders.erase(it);
+                } else {
+                    const Qty qty = static_cast<Qty>(rng() % 50) - 2;
+                    const Qty removed = it == orders.end() || qty <= 0 ? 0 : std::min(qty, it->qty);
+                    CHECK((operation == 7 ? book.execute(id, qty) : book.reduce(id, qty)) == removed);
+                    if (it != orders.end() && removed > 0) {
+                        it->qty -= removed;
+                        if (it->qty == 0) orders.erase(it);
+                    }
+                }
+            }
+            CHECK(g_trades.size() == expected_trades.size());
+            for (std::size_t i = 0; i < g_trades.size(); ++i) {
+                CHECK(g_trades[i].maker_id == expected_trades[i].maker_id);
+                CHECK(g_trades[i].price == expected_trades[i].price);
+                CHECK(g_trades[i].qty == expected_trades[i].qty);
+            }
+            Price bid = -1, ask = -1;
+            Qty depth[WIDTH]{};
+            for (const auto& o : orders) {
+                depth[o.price - BASE] += o.qty;
+                if (o.side == Side::Buy && (bid == -1 || o.price > bid)) bid = o.price;
+                if (o.side == Side::Sell && (ask == -1 || o.price < ask)) ask = o.price;
+            }
+            CHECK(book.best_bid() == bid && book.best_ask() == ask);
+            for (Price p = 0; p < WIDTH; ++p) CHECK(book.level_qty(BASE + p) == depth[p]);
+        }
+    }
+    std::puts("  reference model (36K operations) OK");
+}
+
 // ---------------------------------------------------------------------------
 // ITCH parser: hand-craft a big-endian wire buffer, run the zero-copy
 // parser over it, and verify every decoded field.
@@ -347,6 +602,10 @@ int main() {
     test_cancel();
     test_sweep_across_gap();
     test_reduce();
+    test_book_invalid_inputs();
+    test_advanced_orders();
+    test_risk_boundaries();
+    test_randomized_reference();
     test_itch_parser();
     test_spsc_ring();
     std::puts("ALL TESTS PASSED");
