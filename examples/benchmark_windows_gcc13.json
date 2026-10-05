@@ -1,0 +1,114 @@
+{
+  "recorded_at_utc": "2026-10-05T03:31:56.813649+00:00",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "source_sha256": "4b72ebbea0fe7a773e3ceec6c0f5ea878522d550e58b12ac3a5e1990e460f5a9",
+  "requested_config": "Release",
+  "interpretation": "Machine-specific synthetic microbenchmarks; no latency SLA. Retain failed affinity warnings and compare repeated runs on the same host/build.",
+  "runs": [
+    {
+      "target": "signals",
+      "repeat": 0,
+      "returncode": 0,
+      "binary_sha256": "4d957ef2ba316d4c6e7f39a6701449cd43566a5a0dff719d6fdc8ace1ffba040",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== CORRECTNESS: scripted OFI / micro-price scenario ==\n  open bid 10                        ofi 10 (want 10)  micro -1 (want -1) ok\n  open ask 30                        ofi -20 (want -20)  micro 256256640 (want 256256640) ok\n  bid join +15 (qty 25)              ofi -5 (want -5)  micro 256257163 (want 256257163) ok\n  bid improves +2 ticks, 7           ofi 2 (want 2)  micro 256256899 (want 256256899) ok\n  ask improves -3 ticks, 5           ofi -3 (want -3)  micro 256257258 (want 256257258) ok\n  bid swept, top back to B           ofi -10 (want -10)  micro 256257493 (want 256257493) ok\n  cumulative OFI from publisher: -10   [VERIFIED]\n\n== SIGNAL MATH MICROCOST (batched x10000000) ==\n  OFI + micro-price: 62.02 cycles (19.43 ns) per top-of-book change\n\n== SETUP (cold path) ==\n  feed: 1000000 msgs, 32.3 MB  (A=552822 E=250434 X=116440 D=80304)\n  mapped 33868942 bytes (checksum 379299)\n\n== RUN A: plain BBO publisher ==\n  matches: 250434 fills [VERIFIED]   updates published: 31422 (dropped 0)\n  BBO only (1000000 samples):\n    P50         422 cycles     132.2 ns\n    P90       65768 cycles   20604.2 ns\n    P99      3284500 cycles  1028990.7 ns\n    P99.9    6124847 cycles  1918834.1 ns\n    max      6864174 cycles  2150455.5 ns\n\n== RUN B: OFI + micro-price signal publisher ==\n  matches: 250434 fills [VERIFIED]   updates published: 31422 (dropped 0)\n  signals (1000000 samples):\n    P50         435 cycles     136.3 ns\n    P90       31234 cycles    9785.2 ns\n    P99      3187592 cycles  998630.7 ns\n    P99.9    8181871 cycles  2563272.6 ns\n    max      8982972 cycles  2814247.0 ns\n\n  signal upgrade cost (B - A, ns):  P50 +4.1  P90 -10819.0  P99 -30360.0   (31422 vs 31422 updates)\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "signals",
+      "repeat": 1,
+      "returncode": 0,
+      "binary_sha256": "4d957ef2ba316d4c6e7f39a6701449cd43566a5a0dff719d6fdc8ace1ffba040",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== CORRECTNESS: scripted OFI / micro-price scenario ==\n  open bid 10                        ofi 10 (want 10)  micro -1 (want -1) ok\n  open ask 30                        ofi -20 (want -20)  micro 256256640 (want 256256640) ok\n  bid join +15 (qty 25)              ofi -5 (want -5)  micro 256257163 (want 256257163) ok\n  bid improves +2 ticks, 7           ofi 2 (want 2)  micro 256256899 (want 256256899) ok\n  ask improves -3 ticks, 5           ofi -3 (want -3)  micro 256257258 (want 256257258) ok\n  bid swept, top back to B           ofi -10 (want -10)  micro 256257493 (want 256257493) ok\n  cumulative OFI from publisher: -10   [VERIFIED]\n\n== SIGNAL MATH MICROCOST (batched x10000000) ==\n  OFI + micro-price: 57.70 cycles (18.08 ns) per top-of-book change\n\n== SETUP (cold path) ==\n  feed: 1000000 msgs, 32.3 MB  (A=552822 E=250434 X=116440 D=80304)\n  mapped 33868942 bytes (checksum 379299)\n\n== RUN A: plain BBO publisher ==\n  matches: 250434 fills [VERIFIED]   updates published: 31422 (dropped 0)\n  BBO only (1000000 samples):\n    P50         435 cycles     136.3 ns\n    P90       22142 cycles    6936.8 ns\n    P99      5426453 cycles  1700036.7 ns\n    P99.9    12577390 cycles  3940331.6 ns\n    max      12909828 cycles  4044480.0 ns\n\n== RUN B: OFI + micro-price signal publisher ==\n  matches: 250434 fills [VERIFIED]   updates published: 31422 (dropped 0)\n  signals (1000000 samples):\n    P50         442 cycles     138.5 ns\n    P90      117119 cycles   36691.8 ns\n    P99      3758631 cycles  1177529.9 ns\n    P99.9    6368486 cycles  1995163.3 ns\n    max      6565882 cycles  2057004.8 ns\n\n  signal upgrade cost (B - A, ns):  P50 +2.2  P90 +29755.1  P99 -522506.8   (31422 vs 31422 updates)\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "signals",
+      "repeat": 2,
+      "returncode": 0,
+      "binary_sha256": "4d957ef2ba316d4c6e7f39a6701449cd43566a5a0dff719d6fdc8ace1ffba040",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== CORRECTNESS: scripted OFI / micro-price scenario ==\n  open bid 10                        ofi 10 (want 10)  micro -1 (want -1) ok\n  open ask 30                        ofi -20 (want -20)  micro 256256640 (want 256256640) ok\n  bid join +15 (qty 25)              ofi -5 (want -5)  micro 256257163 (want 256257163) ok\n  bid improves +2 ticks, 7           ofi 2 (want 2)  micro 256256899 (want 256256899) ok\n  ask improves -3 ticks, 5           ofi -3 (want -3)  micro 256257258 (want 256257258) ok\n  bid swept, top back to B           ofi -10 (want -10)  micro 256257493 (want 256257493) ok\n  cumulative OFI from publisher: -10   [VERIFIED]\n\n== SIGNAL MATH MICROCOST (batched x10000000) ==\n  OFI + micro-price: 56.51 cycles (17.71 ns) per top-of-book change\n\n== SETUP (cold path) ==\n  feed: 1000000 msgs, 32.3 MB  (A=552822 E=250434 X=116440 D=80304)\n  mapped 33868942 bytes (checksum 379299)\n\n== RUN A: plain BBO publisher ==\n  matches: 250434 fills [VERIFIED]   updates published: 31422 (dropped 0)\n  BBO only (1000000 samples):\n    P50         519 cycles     162.6 ns\n    P90       93093 cycles   29164.7 ns\n    P99      4721336 cycles  1479127.7 ns\n    P99.9    7072413 cycles  2215686.8 ns\n    max      13993357 cycles  4383920.5 ns\n\n== RUN B: OFI + micro-price signal publisher ==\n  matches: 250434 fills [VERIFIED]   updates published: 31422 (dropped 0)\n  signals (1000000 samples):\n    P50         700 cycles     219.3 ns\n    P90      18572095 cycles  5818374.3 ns\n    P99      47008118 cycles  14726977.5 ns\n    P99.9    56432859 cycles  17679615.3 ns\n    max      56469909 cycles  17691222.5 ns\n\n  signal upgrade cost (B - A, ns):  P50 +56.7  P90 +5789209.6  P99 +13247849.8   (31422 vs 31422 updates)\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "risk",
+      "repeat": 0,
+      "returncode": 0,
+      "binary_sha256": "4a287482b2272dd044ac57f78824d92e530ad3b41e4f7efd049e3517d0e8001b",
+      "stdout": "TSC calibration: 3.192 GHz, rdtsc pair overhead: 23 cycles\n\n== ACCEPT PATH (batched, 10000000 calls) ==\n  15.20 cycles/order  =  4.76 ns/order   [MEETS 20ns budget]\n  accepted 10000000, rejected 0 (expected 0 rejects)\n\n== ACCEPT PATH (per-order, 64-call blocks, overhead-subtracted) ==\n  risk check (156250 samples):\n    P50          11 cycles       3.4 ns\n    P90          17 cycles       5.3 ns\n    P99          23 cycles       7.2 ns\n    P99.9        54 cycles      16.9 ns\n    max       44372 cycles   13901.0 ns\n\n== REJECT PATHS (batched) ==\n  fat finger (qty)    reason=0x1  1.17 ns/order\n  price collar        reason=0x2  1.45 ns/order\n  both (mask = QTY|PB) reason=0x3  1.17 ns/order\n\n== RATE LIMITER ==\n  burst of 4/4 accepted, 5th => 0x8 (want 0x8), after window => 0x0 (want 0)   [VERIFIED]\n\n== POSITION LIMIT ==\n  open8=0x0 breach=0x4 afterCancel=0x0 afterFill+6=0x4 (want 0, 0x4, 0, 0x4)   [VERIFIED]\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "risk",
+      "repeat": 1,
+      "returncode": 0,
+      "binary_sha256": "4a287482b2272dd044ac57f78824d92e530ad3b41e4f7efd049e3517d0e8001b",
+      "stdout": "TSC calibration: 3.192 GHz, rdtsc pair overhead: 23 cycles\n\n== ACCEPT PATH (batched, 10000000 calls) ==\n  12.06 cycles/order  =  3.78 ns/order   [MEETS 20ns budget]\n  accepted 10000000, rejected 0 (expected 0 rejects)\n\n== ACCEPT PATH (per-order, 64-call blocks, overhead-subtracted) ==\n  risk check (156250 samples):\n    P50          11 cycles       3.4 ns\n    P90          13 cycles       4.1 ns\n    P99          21 cycles       6.6 ns\n    P99.9        52 cycles      16.3 ns\n    max        6011 cycles    1883.1 ns\n\n== REJECT PATHS (batched) ==\n  fat finger (qty)    reason=0x1  1.17 ns/order\n  price collar        reason=0x2  1.17 ns/order\n  both (mask = QTY|PB) reason=0x3  3.30 ns/order\n\n== RATE LIMITER ==\n  burst of 4/4 accepted, 5th => 0x8 (want 0x8), after window => 0x0 (want 0)   [VERIFIED]\n\n== POSITION LIMIT ==\n  open8=0x0 breach=0x4 afterCancel=0x0 afterFill+6=0x4 (want 0, 0x4, 0, 0x4)   [VERIFIED]\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "risk",
+      "repeat": 2,
+      "returncode": 0,
+      "binary_sha256": "4a287482b2272dd044ac57f78824d92e530ad3b41e4f7efd049e3517d0e8001b",
+      "stdout": "TSC calibration: 3.192 GHz, rdtsc pair overhead: 41 cycles\n\n== ACCEPT PATH (batched, 10000000 calls) ==\n  16.03 cycles/order  =  5.02 ns/order   [MEETS 20ns budget]\n  accepted 10000000, rejected 0 (expected 0 rejects)\n\n== ACCEPT PATH (per-order, 64-call blocks, overhead-subtracted) ==\n  risk check (156250 samples):\n    P50          11 cycles       3.4 ns\n    P90          11 cycles       3.4 ns\n    P99          19 cycles       6.0 ns\n    P99.9        43 cycles      13.5 ns\n    max        7761 cycles    2431.4 ns\n\n== REJECT PATHS (batched) ==\n  fat finger (qty)    reason=0x1  1.17 ns/order\n  price collar        reason=0x2  1.28 ns/order\n  both (mask = QTY|PB) reason=0x3  1.53 ns/order\n\n== RATE LIMITER ==\n  burst of 4/4 accepted, 5th => 0x8 (want 0x8), after window => 0x0 (want 0)   [VERIFIED]\n\n== POSITION LIMIT ==\n  open8=0x0 breach=0x4 afterCancel=0x0 afterFill+6=0x4 (want 0, 0x4, 0, 0x4)   [VERIFIED]\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "advanced_orders",
+      "repeat": 0,
+      "returncode": 0,
+      "binary_sha256": "0e7685826f9fdafe77f2f44015e10b8fbf0e2a16c398d276b2984e4a59b692e6",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== (a) ICEBERG RELOAD LOSES TIME PRIORITY ==\n  iceberg id=4294967297 resting, visible level_qty=10 (want 10)\n  plain id=4294967298 resting behind it, level_qty=15 (want 15)\n  sweep #1 (10 lots): maker=4294967297 qty=10  (want maker=4294967297 qty=10)\n  sweep #2 (5 lots):  maker=4294967298 qty=5  (want maker=4294967298 qty=5)  <- proves reload lost priority\n  sweep #3 (3 lots):  maker=4294967297 qty=3  level_qty=7 (want 7)\n  [VERIFIED]\n\n== (b) POST-ONLY REJECTS A CROSSING ORDER ==\n  post_only bid AT ask:    id=0 (want 0), trades=0, ask level_qty=20 (want 20)\n  post_only bid THRU ask:  id=0 (want 0), trades=0\n  post_only bid BELOW ask: id=4294967298 (want != 0), best_bid=1000900 (want 1000900)   <- legitimate maker not rejected\n  same order, post_only=false: trades=1 qty=5 (want 1, 5)   <- confirms the reject was the flag, not the price\n  [VERIFIED]\n\n== MICROCOST: post_only flag / iceberg reload overhead ==\n  plain new_order (post_only=false):        4.21 ns/op\n  new_order(post_only=false explicit):      1.61 ns/op\n  new_iceberg_order (rest, no reload):      1.82 ns/op\n\n== SUMMARY ==\n  (a) iceberg reload loses priority: [VERIFIED]\n  (b) post-only rejects on cross:     [VERIFIED]\n",
+      "stderr": ""
+    },
+    {
+      "target": "advanced_orders",
+      "repeat": 1,
+      "returncode": 0,
+      "binary_sha256": "0e7685826f9fdafe77f2f44015e10b8fbf0e2a16c398d276b2984e4a59b692e6",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== (a) ICEBERG RELOAD LOSES TIME PRIORITY ==\n  iceberg id=4294967297 resting, visible level_qty=10 (want 10)\n  plain id=4294967298 resting behind it, level_qty=15 (want 15)\n  sweep #1 (10 lots): maker=4294967297 qty=10  (want maker=4294967297 qty=10)\n  sweep #2 (5 lots):  maker=4294967298 qty=5  (want maker=4294967298 qty=5)  <- proves reload lost priority\n  sweep #3 (3 lots):  maker=4294967297 qty=3  level_qty=7 (want 7)\n  [VERIFIED]\n\n== (b) POST-ONLY REJECTS A CROSSING ORDER ==\n  post_only bid AT ask:    id=0 (want 0), trades=0, ask level_qty=20 (want 20)\n  post_only bid THRU ask:  id=0 (want 0), trades=0\n  post_only bid BELOW ask: id=4294967298 (want != 0), best_bid=1000900 (want 1000900)   <- legitimate maker not rejected\n  same order, post_only=false: trades=1 qty=5 (want 1, 5)   <- confirms the reject was the flag, not the price\n  [VERIFIED]\n\n== MICROCOST: post_only flag / iceberg reload overhead ==\n  plain new_order (post_only=false):        2.98 ns/op\n  new_order(post_only=false explicit):      1.16 ns/op\n  new_iceberg_order (rest, no reload):      0.83 ns/op\n\n== SUMMARY ==\n  (a) iceberg reload loses priority: [VERIFIED]\n  (b) post-only rejects on cross:     [VERIFIED]\n",
+      "stderr": ""
+    },
+    {
+      "target": "advanced_orders",
+      "repeat": 2,
+      "returncode": 0,
+      "binary_sha256": "0e7685826f9fdafe77f2f44015e10b8fbf0e2a16c398d276b2984e4a59b692e6",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== (a) ICEBERG RELOAD LOSES TIME PRIORITY ==\n  iceberg id=4294967297 resting, visible level_qty=10 (want 10)\n  plain id=4294967298 resting behind it, level_qty=15 (want 15)\n  sweep #1 (10 lots): maker=4294967297 qty=10  (want maker=4294967297 qty=10)\n  sweep #2 (5 lots):  maker=4294967298 qty=5  (want maker=4294967298 qty=5)  <- proves reload lost priority\n  sweep #3 (3 lots):  maker=4294967297 qty=3  level_qty=7 (want 7)\n  [VERIFIED]\n\n== (b) POST-ONLY REJECTS A CROSSING ORDER ==\n  post_only bid AT ask:    id=0 (want 0), trades=0, ask level_qty=20 (want 20)\n  post_only bid THRU ask:  id=0 (want 0), trades=0\n  post_only bid BELOW ask: id=4294967298 (want != 0), best_bid=1000900 (want 1000900)   <- legitimate maker not rejected\n  same order, post_only=false: trades=1 qty=5 (want 1, 5)   <- confirms the reject was the flag, not the price\n  [VERIFIED]\n\n== MICROCOST: post_only flag / iceberg reload overhead ==\n  plain new_order (post_only=false):        1.48 ns/op\n  new_order(post_only=false explicit):      1.88 ns/op\n  new_iceberg_order (rest, no reload):      0.84 ns/op\n\n== SUMMARY ==\n  (a) iceberg reload loses priority: [VERIFIED]\n  (b) post-only rejects on cross:     [VERIFIED]\n",
+      "stderr": ""
+    },
+    {
+      "target": "journal",
+      "repeat": 0,
+      "returncode": 0,
+      "binary_sha256": "71f3c4dbb83aced1708129b6f9b66966e9ffcb22f5bb584207ec4450d810d824",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== SETUP (cold path) ==\n  feed: 1000000 msgs, 32.3 MB  (A=552822 E=250434 X=116440 D=80304)\n  mapped 33868942 bytes (checksum 379299)\n\n== RUN A: pipeline latency, journal OFF ==\n  matches: 250434 fills  [VERIFIED]\n  journal OFF (1000000 samples):\n    P50         493 cycles     154.4 ns\n    P90      987629 cycles  309408.4 ns\n    P99      7058607 cycles  2211348.7 ns\n    P99.9    12036574 cycles  3770866.1 ns\n    max      12233783 cycles  3832648.6 ns\n\n== RUN B: pipeline latency, journal ON ==\n  matches: 250434 fills  [VERIFIED]\n  journal ON (1000000 samples):\n    P50         535 cycles     167.6 ns\n    P90      411459 cycles  128903.5 ns\n    P99      5002707 cycles  1567268.1 ns\n    P99.9    11859950 cycles  3715532.7 ns\n    max      12292409 cycles  3851015.2 ns\n  journalled 33868942 bytes, dropped 0\n\n  journal cost at the percentiles (ON - OFF, ns):  P50 +13.2  P99 -644080.6  P99.9 -55333.5\n\n== APPEND MICROCOST ==\n  14.46 cycles (4.53 ns) per 38-byte frame, batched x2000000\n\n== REPLAY: reconstructing engine state from the journal ==\n  journal: 33868942 committed bytes\n  replayed 1000000 msgs in 92.9 ms (10.8 M msgs/sec, single thread)\n  trades 250434/250434  lots 1053639/1053639  bb 1032767/1032767  ba 1032769/1032769\n  book fingerprint: 74F02C3F12B18B82 vs 74F02C3F12B18B82   [DETERMINISTIC]\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "journal",
+      "repeat": 1,
+      "returncode": 0,
+      "binary_sha256": "71f3c4dbb83aced1708129b6f9b66966e9ffcb22f5bb584207ec4450d810d824",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== SETUP (cold path) ==\n  feed: 1000000 msgs, 32.3 MB  (A=552822 E=250434 X=116440 D=80304)\n  mapped 33868942 bytes (checksum 379299)\n\n== RUN A: pipeline latency, journal OFF ==\n  matches: 250434 fills  [VERIFIED]\n  journal OFF (1000000 samples):\n    P50         682 cycles     213.7 ns\n    P90      6181730 cycles  1936637.2 ns\n    P99      11894765 cycles  3726439.8 ns\n    P99.9    13726198 cycles  4300198.5 ns\n    max      35585918 cycles  11148499.4 ns\n\n== RUN B: pipeline latency, journal ON ==\n  matches: 250434 fills  [VERIFIED]\n  journal ON (1000000 samples):\n    P50      1969461 cycles  617000.7 ns\n    P90      16113767 cycles  5048185.7 ns\n    P99      59217665 cycles  18551948.1 ns\n    P99.9    72635543 cycles  22755554.8 ns\n    max      72665360 cycles  22764896.0 ns\n  journalled 33868942 bytes, dropped 0\n\n  journal cost at the percentiles (ON - OFF, ns):  P50 +616787.0  P99 +14825508.3  P99.9 +18455356.4\n\n== APPEND MICROCOST ==\n  52.26 cycles (16.37 ns) per 38-byte frame, batched x2000000\n\n== REPLAY: reconstructing engine state from the journal ==\n  journal: 33868942 committed bytes\n  replayed 1000000 msgs in 174.4 ms (5.7 M msgs/sec, single thread)\n  trades 250434/250434  lots 1053639/1053639  bb 1032767/1032767  ba 1032769/1032769\n  book fingerprint: 74F02C3F12B18B82 vs 74F02C3F12B18B82   [DETERMINISTIC]\n\nbenchmark complete.\n",
+      "stderr": ""
+    },
+    {
+      "target": "journal",
+      "repeat": 2,
+      "returncode": 0,
+      "binary_sha256": "71f3c4dbb83aced1708129b6f9b66966e9ffcb22f5bb584207ec4450d810d824",
+      "stdout": "TSC calibration: 3.192 GHz\n\n== SETUP (cold path) ==\n  feed: 1000000 msgs, 32.3 MB  (A=552822 E=250434 X=116440 D=80304)\n  mapped 33868942 bytes (checksum 379299)\n\n== RUN A: pipeline latency, journal OFF ==\n  matches: 250434 fills  [VERIFIED]\n  journal OFF (1000000 samples):\n    P50         547 cycles     171.4 ns\n    P90      3534441 cycles  1107283.9 ns\n    P99      7327715 cycles  2295656.0 ns\n    P99.9    8529099 cycles  2672030.4 ns\n    max      16114678 cycles  5048471.0 ns\n\n== RUN B: pipeline latency, journal ON ==\n  matches: 250434 fills  [VERIFIED]\n  journal ON (1000000 samples):\n    P50         457 cycles     143.2 ns\n    P90      237088 cycles   74275.9 ns\n    P99      2799955 cycles  877181.1 ns\n    P99.9    6268148 cycles  1963710.6 ns\n    max      7154882 cycles  2241510.2 ns\n  journalled 33868942 bytes, dropped 0\n\n  journal cost at the percentiles (ON - OFF, ns):  P50 -28.2  P99 -1418474.8  P99.9 -708319.8\n\n== APPEND MICROCOST ==\n  23.39 cycles (7.33 ns) per 38-byte frame, batched x2000000\n\n== REPLAY: reconstructing engine state from the journal ==\n  journal: 33868942 committed bytes\n  replayed 1000000 msgs in 103.9 ms (9.6 M msgs/sec, single thread)\n  trades 250434/250434  lots 1053639/1053639  bb 1032767/1032767  ba 1032769/1032769\n  book fingerprint: 74F02C3F12B18B82 vs 74F02C3F12B18B82   [DETERMINISTIC]\n\nbenchmark complete.\n",
+      "stderr": ""
+    }
+  ],
+  "compiler": "GCC 13.1.0 (MSYS2 UCRT64)",
+  "build_settings": [
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_FLAGS:STRING=",
+    "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG",
+    "LOB_NATIVE:BOOL=OFF",
+    "LOB_SANITIZERS:BOOL=OFF"
+  ]
+}

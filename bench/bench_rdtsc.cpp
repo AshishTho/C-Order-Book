@@ -21,8 +21,8 @@
 //
 // METHODOLOGY NOTES
 // -----------------
-// * Thread pinned to one core + top scheduling priority: eliminates
-//   migration (cold caches) and preemption from the tail.
+// * Thread affinity is attempted and failures reported. Normal scheduling
+//   priority is retained; preemption and host load remain in the tail.
 // * Workload is pre-generated OUTSIDE the timed region with a deterministic
 //   xorshift RNG -- we never time the RNG, and runs are reproducible.
 // * 100k-op warm-up populates the book, faults every page in, and trains
@@ -53,21 +53,19 @@
 using namespace lob;
 
 // ---------------------------------------------------------------------------
-// OS knobs: pin the calling thread to `core` and raise its priority.
+// OS knobs: attempt to pin the calling thread without changing priority.
 // Cold path -- called once per thread before measurement.
 // ---------------------------------------------------------------------------
 static void pin_thread(unsigned core) {
 #if defined(_WIN32)
-    SetThreadAffinityMask(GetCurrentThread(), 1ull << core);
-    // Try REALTIME first (needs elevation; silently downgrades otherwise).
-    if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS))
-        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    if (core >= 64 || !SetThreadAffinityMask(GetCurrentThread(), 1ull << core))
+        std::fprintf(stderr, "warning: could not pin benchmark thread to core %u\n", core);
 #else
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(core, &set);
-    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
+        std::fprintf(stderr, "warning: could not pin benchmark thread to core %u\n", core);
 #endif
 }
 

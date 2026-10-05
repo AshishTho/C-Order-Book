@@ -19,8 +19,8 @@
 //
 // * BEST-PRICE MAINTENANCE: cached best bid/ask indices + a hierarchical
 //   bitmap (level_bitmap.hpp) so that "level emptied, find next best" is
-//   constant-time even across a huge price gap. This is what keeps P99.9
-//   bounded: no operation in this engine is O(book depth).
+//   constant-time even across a huge price gap. Matching itself remains
+//   proportional to the orders and reserve clips filled in the sweep.
 //
 // * ID -> ORDER RESOLUTION for cancels: the order id ENCODES the arena slot
 //   (low 32 bits) plus a generation counter (high 32 bits). The generation
@@ -37,6 +37,7 @@
 #include "order.hpp"
 #include "memory_pool.hpp"
 #include "level_bitmap.hpp"
+#include <limits>
 
 namespace lob {
 
@@ -50,7 +51,7 @@ struct PriceLevel {
     Order* head;        // oldest order (first to fill -- time priority)
     Order* tail;        // newest order (arrivals append here)
     Qty    total_qty;   // aggregate resting size (top-of-book feeds)
-    Qty    _pad;
+    Qty    remaining_qty; // visible + reserve; bounds reloads against overflow
 };
 static_assert(sizeof(PriceLevel) == 32);
 
@@ -61,8 +62,8 @@ static_assert(sizeof(PriceLevel) == 32);
 // Cancel   : remove a resting order entirely   (ITCH 'D' Order Delete).
 // Execute  : fill `qty` of a resting order      (ITCH 'E' Order Executed).
 // Reduce   : cancel `qty` of a resting order    (ITCH 'X' partial cancel).
-// Execute and Reduce mutate the book identically (both call reduce()); they
-// are distinct types so the consumer can count trades vs. cancels correctly.
+// Execute consumes displayed size and reloads reserve; Reduce cancels reserve
+// first. For ordinary orders their book mutations are identical.
 enum class MsgType : std::uint8_t {
     NewOrder = 0, Cancel = 1, Execute = 2, Reduce = 3
 };
@@ -96,6 +97,8 @@ struct Trade {
 // ---------------------------------------------------------------------------
 template <std::size_t NumTicks = 1u << 16, std::size_t PoolCap = 1u << 20>
 class OrderBook {
+    static_assert(PoolCap > 0 && PoolCap < 0xFFFFFFFFull,
+                  "order IDs require a nonzero 32-bit slot-plus-one");
 public:
     static constexpr std::size_t NPOS = LevelBitmap<NumTicks>::NPOS;
 
@@ -132,25 +135,23 @@ public:
     // ========================================================================
     // HOT PATH -- new limit order. Returns the engine id (0 => rejected).
     // Price-time priority: cross against the far side first, rest remainder.
-    // `on_trade` is any callable `void(const Trade&)`; it inlines away.
+    // `on_trade` is any callable `void(const Trade&)`; it must not mutate
+    // this book or throw. Reports run during the matching operation.
     //
     // `post_only` (maker-only / "add liquidity or reject"): if the order
     // would execute on arrival, it must be rejected outright rather than
     // partially filled or repriced. `crosses` is computed with the exact
     // same comparison the matching loop below would use, so "would cross"
-    // and "would match" can never disagree. The reject test is a single
-    // bitwise AND of two already-computed booleans (`&`, not `&&`): no
-    // short-circuit, no second branch -- the reject and the "is this a
-    // post-only order" checks collapse into one predicted-unlikely branch,
-    // so the overwhelmingly common post_only == false callers pay for
-    // exactly one extra AND instruction and nothing else.
+    // and "would match" use the same predicate. The compiler can remove
+    // this reject check when post_only is a compile-time false value.
     // ========================================================================
     template <typename TradeHandler>
     LOB_FORCE_INLINE OrderId new_order(Side side, Price price, Qty qty,
                                        TradeHandler&& on_trade,
                                        bool post_only = false) noexcept {
-        const std::size_t idx = static_cast<std::size_t>(price - base_);
-        if (LOB_UNLIKELY(idx >= NumTicks || qty <= 0)) return 0;
+        const std::size_t idx = price_index(price);
+        if (LOB_UNLIKELY(idx >= NumTicks || qty <= 0 || !valid_side(side)))
+            return 0;
 
         if (side == Side::Buy) {
             const bool crosses = best_ask_ <= idx;
@@ -187,8 +188,9 @@ public:
     LOB_FORCE_INLINE OrderId new_iceberg_order(Side side, Price price,
                                                Qty display_qty, Qty total_qty,
                                                TradeHandler&& on_trade) noexcept {
-        const std::size_t idx = static_cast<std::size_t>(price - base_);
-        if (LOB_UNLIKELY(idx >= NumTicks || total_qty <= 0 || display_qty <= 0))
+        const std::size_t idx = price_index(price);
+        if (LOB_UNLIKELY(idx >= NumTicks || total_qty <= 0 || display_qty <= 0 ||
+                         !valid_side(side)))
             return 0;
 
         Qty qty = total_qty;
@@ -209,39 +211,70 @@ public:
     // HOT PATH -- cancel by id. O(1): decode slot, verify generation, unlink.
     // ========================================================================
     LOB_FORCE_INLINE bool cancel(OrderId id) noexcept {
-        const std::size_t slot = static_cast<std::size_t>(id & 0xFFFFFFFFu) - 1;
-        if (LOB_UNLIKELY(slot >= PoolCap)) return false;
-        // Liveness check against the generation array ONLY. Generations bump
-        // on rest and on removal, so a stale/duplicate/forged id mismatches
-        // here and we never touch (possibly recycled) order storage.
-        if (LOB_UNLIKELY(generations_[slot] !=
-                         static_cast<std::uint32_t>(id >> 32))) return false;
-        Order* o = pool_.at(slot);
-        unlink_and_release(o, slot);
+        Order* o = find_live(id);
+        if (LOB_UNLIKELY(o == nullptr)) return false;
+        unlink_and_release(o, pool_.index_of(o));
         return true;
     }
 
     // ========================================================================
-    // HOT PATH -- reduce a resting order by `q` lots (ITCH 'E' Order Executed
-    // and 'X' partial cancel both map here). O(1): the common case (partial)
-    // is two subtractions; full exhaustion falls through to the unlink path.
-    // Returns the quantity actually removed (0 => stale/unknown id).
+    // Reduce/cancel `q` lots, taking hidden reserve first to retain displayed
+    // priority. For ordinary orders this also models an external execution.
+    // Returns the quantity actually removed; nonpositive q is a no-op.
     // ========================================================================
     LOB_FORCE_INLINE Qty reduce(OrderId id, Qty q) noexcept {
-        const std::size_t slot = static_cast<std::size_t>(id & 0xFFFFFFFFu) - 1;
-        if (LOB_UNLIKELY(slot >= PoolCap)) return 0;
-        if (LOB_UNLIKELY(generations_[slot] !=
-                         static_cast<std::uint32_t>(id >> 32))) return 0;
-        Order* o = pool_.at(slot);
-
-        if (LOB_LIKELY(q < o->qty)) {           // partial: 2 stores, done
-            o->qty -= q;
-            levels_[static_cast<std::size_t>(o->price - base_)].total_qty -= q;
-            return q;
+        if (LOB_UNLIKELY(q <= 0)) return 0;
+        Order* o = find_live(id);
+        if (LOB_UNLIKELY(o == nullptr)) return 0;
+        const Qty remaining = o->qty + o->hidden_qty;
+        if (q >= remaining) {
+            unlink_and_release(o, pool_.index_of(o));
+            return remaining;
         }
-        const Qty removed = o->qty;             // full: remove from book
-        unlink_and_release(o, slot);
-        return removed;
+        const Qty hidden_removed = q < o->hidden_qty ? q : o->hidden_qty;
+        o->hidden_qty -= hidden_removed;
+        const Qty visible_removed = q - hidden_removed;
+        o->qty -= visible_removed;
+        PriceLevel& lvl = levels_[price_index(o->price)];
+        lvl.total_qty -= visible_removed;
+        lvl.remaining_qty -= q;
+        return q;
+    }
+
+    // Apply an external execution to a known resting ID, without emitting a
+    // second trade report. Reserve reloads lose priority just as in matching.
+    LOB_FORCE_INLINE Qty execute(OrderId id, Qty q) noexcept {
+        if (LOB_UNLIKELY(q <= 0)) return 0;
+        Order* o = find_live(id);
+        if (LOB_UNLIKELY(o == nullptr)) return 0;
+        const Qty remaining = o->qty + o->hidden_qty;
+        if (q >= remaining) {
+            unlink_and_release(o, pool_.index_of(o));
+            return remaining;
+        }
+        PriceLevel& lvl = levels_[price_index(o->price)];
+        lvl.remaining_qty -= q;
+        if (q < o->qty) {
+            o->qty -= q;
+            lvl.total_qty -= q;
+        } else {
+            // Skip any fully consumed reserve clips in O(1).
+            const Qty clip = o->display_qty - (q - o->qty) % o->display_qty;
+            const Qty visible = clip < remaining - q ? clip : remaining - q;
+            lvl.total_qty -= o->qty;
+            lvl.total_qty += visible;
+            o->qty = visible;
+            o->hidden_qty = remaining - q - visible;
+            if (o != lvl.tail) {
+                if (o->prev) o->prev->next = o->next; else lvl.head = o->next;
+                o->next->prev = o->prev;
+                o->prev = lvl.tail;
+                o->next = nullptr;
+                lvl.tail->next = o;
+                lvl.tail = o;
+            }
+        }
+        return q;
     }
 
     // Message dispatcher -- what the engine thread runs per ring item.
@@ -255,6 +288,7 @@ public:
         case MsgType::Cancel:
             cancel(m.id);                                 break;
         case MsgType::Execute:
+            execute(m.id, m.qty);                         break;
         case MsgType::Reduce:
             reduce(m.id, m.qty);                          break;
         }
@@ -268,11 +302,32 @@ public:
         return best_ask_ >= NumTicks ? -1 : base_ + static_cast<Price>(best_ask_);
     }
     Qty level_qty(Price p) const noexcept {
-        const std::size_t idx = static_cast<std::size_t>(p - base_);
+        const std::size_t idx = price_index(p);
         return idx < NumTicks ? levels_[idx].total_qty : 0;
     }
 
 private:
+    static constexpr bool valid_side(Side side) noexcept {
+        return side == Side::Buy || side == Side::Sell;
+    }
+
+    LOB_FORCE_INLINE std::size_t price_index(Price p) const noexcept {
+        if (p < base_) return NumTicks;
+        const auto offset = static_cast<std::uint64_t>(p) -
+                            static_cast<std::uint64_t>(base_);
+        return offset < NumTicks ? static_cast<std::size_t>(offset) : NumTicks;
+    }
+
+    LOB_FORCE_INLINE Order* find_live(OrderId id) const noexcept {
+        const std::size_t slot = static_cast<std::size_t>(id & 0xFFFFFFFFu) - 1;
+        const auto generation = static_cast<std::uint32_t>(id >> 32);
+        // Odd generations are live; even generations (including zero) are
+        // dead storage. Equality alone would accept fabricated free-slot IDs.
+        if (LOB_UNLIKELY(slot >= PoolCap || (generation & 1u) == 0)) return nullptr;
+        if (LOB_UNLIKELY(generations_[slot] != generation)) return nullptr;
+        return pool_.at(slot);
+    }
+
     // Sentinel id returned when a taker fully fills without resting.
     static constexpr OrderId TAKER_FILLED_ID = ~OrderId{0};
 
@@ -288,6 +343,7 @@ private:
         if (o->prev) o->prev->next = o->next; else lvl.head = o->next;
         if (o->next) o->next->prev = o->prev; else lvl.tail = o->prev;
         lvl.total_qty -= o->qty;
+        lvl.remaining_qty -= o->qty + o->hidden_qty;
 
         if (lvl.head == nullptr) {          // level emptied
             if (o->side == Side::Buy) {
@@ -339,6 +395,7 @@ private:
             qty          -= fill;
             o->qty       -= fill;
             lvl.total_qty -= fill;
+            lvl.remaining_qty -= fill;
             on_trade(Trade{o->id, 0, px, fill});
 
             if (o->qty == 0) {                 // visible clip exhausted
@@ -407,6 +464,9 @@ private:
     // ------------------------------------------------------------------
     template <Side S>
     LOB_FORCE_INLINE OrderId rest(std::size_t idx, Price price, Qty qty) noexcept {
+        PriceLevel& lvl = levels_[idx];
+        if (LOB_UNLIKELY(qty > std::numeric_limits<Qty>::max() - lvl.remaining_qty))
+            return 0;
         Order* o = pool_.acquire();            // placement-new inside
         if (LOB_UNLIKELY(o == nullptr)) return 0;   // arena exhausted: reject
 
@@ -418,11 +478,11 @@ private:
             static_cast<OrderId>(slot + 1);
         o->init(id, S, price, qty);
 
-        PriceLevel& lvl = levels_[idx];
         o->prev = lvl.tail;                    // append at tail (time priority)
         if (lvl.tail) lvl.tail->next = o; else lvl.head = o;
         lvl.tail = o;
         lvl.total_qty += qty;
+        lvl.remaining_qty += qty;
 
         if constexpr (S == Side::Buy) {
             bids_.set(idx);
@@ -443,6 +503,9 @@ private:
     template <Side S>
     LOB_FORCE_INLINE OrderId rest_iceberg(std::size_t idx, Price price,
                                           Qty display_qty, Qty remaining) noexcept {
+        PriceLevel& lvl = levels_[idx];
+        if (LOB_UNLIKELY(remaining > std::numeric_limits<Qty>::max() - lvl.remaining_qty))
+            return 0;
         Order* o = pool_.acquire();
         if (LOB_UNLIKELY(o == nullptr)) return 0;   // arena exhausted: reject
 
@@ -455,11 +518,11 @@ private:
         o->display_qty = display_qty;
         o->hidden_qty  = remaining - visible;
 
-        PriceLevel& lvl = levels_[idx];
         o->prev = lvl.tail;
         if (lvl.tail) lvl.tail->next = o; else lvl.head = o;
         lvl.tail = o;
         lvl.total_qty += visible;
+        lvl.remaining_qty += remaining;
 
         if constexpr (S == Side::Buy) {
             bids_.set(idx);

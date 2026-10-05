@@ -19,3 +19,9 @@ Thumbs.db
 
 # Toolchain / temp
 *.zip
+
+# Python and generated research output
+__pycache__/
+*.pyc
+results/
+*.partial

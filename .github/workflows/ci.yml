@@ -1,0 +1,31 @@
+name: Build, correctness, and research
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, compiler: g++, type: Release, sanitizers: 'OFF'}
+          - {os: ubuntu-latest, compiler: clang++, type: Debug, sanitizers: 'ON'}
+          - {os: windows-latest, compiler: cl, type: Release, sanitizers: 'OFF'}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DLOB_SANITIZERS=${{ matrix.sanitizers }}
+      - name: Build
+        run: cmake --build build --config ${{ matrix.type }} --parallel 2
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.type }} --output-on-failure
+      - name: Reproduce synthetic study
+        run: python scripts/run_study.py --build-dir build --config ${{ matrix.type }} --output-dir build/study
+      - uses: actions/upload-artifact@v4
+        with:
+          name: study-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.type }}
+          path: build/study/

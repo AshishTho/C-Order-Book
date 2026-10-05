@@ -36,13 +36,12 @@ namespace lob::bench {
 // ---------------------------------------------------------------------------
 inline void pin_thread(unsigned core) {
 #if defined(_WIN32)
-    SetThreadAffinityMask(GetCurrentThread(), 1ull << core);
-    if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS))
-        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    if (core >= 64 || !SetThreadAffinityMask(GetCurrentThread(), 1ull << core))
+        std::fprintf(stderr, "warning: could not pin benchmark thread to core %u\n", core);
 #else
     cpu_set_t set; CPU_ZERO(&set); CPU_SET(core, &set);
-    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
+        std::fprintf(stderr, "warning: could not pin benchmark thread to core %u\n", core);
 #endif
 }
 

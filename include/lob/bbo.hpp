@@ -25,8 +25,8 @@
 // * DROP-ON-FULL (CONFLATION) POLICY. Market data is state, not commands:
 //   if the consumer stalls, shipping it a backlog of stale BBOs is worse
 //   than useless -- it delays the CURRENT truth. If the ring is full we
-//   drop the update and count it; the next successful publish carries the
-//   latest state anyway (each update is a full snapshot, not a delta).
+//   retain the latest snapshot and count the failed attempt. Retry on the
+//   next event or via producer-thread flush_pending() when the feed is quiet.
 //   The seq field lets the consumer DETECT the gap. Crucially this means
 //   the ENGINE NEVER BLOCKS ON A SLOW SUBSCRIBER.
 //
@@ -81,8 +81,10 @@ public:
         // HOT COMMON CASE: top untouched (deep-book add/cancel). Four
         // compares, no stores, fall through.
         if (bp == last_.bid_px && ap == last_.ask_px &&
-            bq == last_.bid_qty && aq == last_.ask_qty)
+            bq == last_.bid_qty && aq == last_.ask_qty) {
+            if (pending_) flush_pending();
             return;
+        }
 
         last_.bid_px  = bp;  last_.ask_px  = ap;
         last_.bid_qty = bq;  last_.ask_qty = aq;
@@ -91,10 +93,18 @@ public:
 
         // Drop-on-full = conflate. Never spin: the engine's latency budget
         // outranks a lagging subscriber's completeness.
-        if (LOB_UNLIKELY(!ring_.try_push(last_))) ++dropped_;
-        else                                      ++published_;
+        pending_ = true;
+        flush_pending();
     }
 
+    bool flush_pending() noexcept {
+        if (!pending_) return true;
+        if (LOB_UNLIKELY(!ring_.try_push(last_))) { ++dropped_; return false; }
+        pending_ = false;
+        ++published_;
+        return true;
+    }
+    bool pending() const noexcept { return pending_; }
     std::uint64_t published() const noexcept { return published_; }
     std::uint64_t dropped()   const noexcept { return dropped_;   }
 
@@ -103,6 +113,7 @@ private:
     Ring&         ring_;
     BboUpdate     last_{ -1, -1, 0, 0, 0, 0 };   // nothing published yet
     std::uint64_t seq_ = 0, published_ = 0, dropped_ = 0;
+    bool pending_ = false;
 };
 
 } // namespace lob
