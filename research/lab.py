@@ -397,7 +397,8 @@ def compact_metrics(simulation: dict) -> dict:
 
 
 def write_html(report: dict, path: Path) -> None:
-    """Small dependency-free report: use the JSON for full-resolution audit data."""
+    """Self-contained summary and replay inspector; JSON remains the audit record."""
+    from research.replay_viewer import render_replay
     colors = ("#4dd9c0", "#ffba69", "#ae97ff", "#90a0b5", "#f3f5f7")
     curves = [item["execution"]["equity_curve"] for item in report["strategies"].values()]
     all_values = [point["equity_ticks_lots"] for curve in curves for point in curve]
@@ -442,6 +443,7 @@ body{{font:16px/1.55 system-ui;background:#101720;color:#e1e7ef;max-width:1100px
 <svg viewBox="0 0 980 320" role="img" aria-label="Held-out strategy equity curves">{''.join(paths)}</svg>
 <div class="scroll"><table><tr><th>Strategy</th><th>Net PnL</th><th>Max drawdown</th><th>Round trips</th><th>Turnover</th><th>End inventory</th><th>Markout corr.</th></tr>{''.join(table_rows)}</table></div>
 <h2>Transaction-cost diagnostics</h2><p>Costs are ticks per lot per side, charged at entry and exit. JSON includes delay scenarios and every fill.</p>{''.join(panels)}
+{render_replay(report)}
 <h2>Model contract & limitations</h2><ul>{assumptions}</ul><p>Reproduce with the accompanying JSON configuration and input SHA-256. No external assets, analytics, or network requests.</p></html>'''
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as stream:

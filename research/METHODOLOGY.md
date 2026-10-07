@@ -155,6 +155,23 @@ latency distribution, short-borrow/funding model, or maker-fill simulation. This
 is an intentionally explicit small-order crossing benchmark, not a production
 execution simulator. No return percentage is reported without a capital model.
 
+## Inspecting the recorded replay
+
+The self-contained HTML report includes an observation replay inspector. Choose
+a strategy, scrub held-out observations, or jump between recorded fills. It shows
+midpoint equity, inventory, drawdown, per-fill fees/slippage, completed round-trip
+PnL, and terminal open inventory without adding a hypothetical closing fill.
+Cost rows are derived from the recorded quantities and saved cost configuration.
+Large integer prices and sequence identifiers are embedded as decimal strings to
+avoid browser rounding. Losing trades and the flat control remain in the report.
+
+The provenance panel exposes the analyzed input SHA-256, source declaration,
+configuration, units and chronological split. These controls only inspect saved
+simulation results; they do not rerun models, fetch data or place orders. The JSON
+report remains the full audit artifact, and existing output files are still never
+overwritten. The interactive section includes every held-out point and recorded
+fill, so HTML size grows with the experiment; the overview plot stays sampled.
+
 ## Next empirical experiment
 
 Before changing the strategy, obtain a licensed, gap-audited multi-session feed;
