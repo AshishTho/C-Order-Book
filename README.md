@@ -22,6 +22,10 @@ An optional, offline [Leakage Lab syntax check](research/LEAKAGE_CHECK.md) flags
 literal negative row shifts for review. This limited first rule never executes
 scanned code and does not certify a backtest as free of leakage.
 
+[Repro Capsule](research/REPRO_CAPSULE.md) previews manually supplied commands,
+logs and diffs before creating a local JSON evidence report. It flags some
+possible secrets and never collects files, executes commands or uploads reports.
+
 ## Reproduce the whole experiment
 
 Requirements: CMake 3.16+, a C++20 compiler, Python 3.10+. No Python packages
