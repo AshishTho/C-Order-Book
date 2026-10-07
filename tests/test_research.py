@@ -1,10 +1,11 @@
 """Economic and leakage invariants, not golden-file performance targets."""
 
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import replace
+from dataclasses import asdict, replace
 import io
 import hashlib
 import json
+import re
 from unittest.mock import patch
 from pathlib import Path
 import tempfile
@@ -13,6 +14,7 @@ import unittest
 from research.generate import generate_events
 from research.lab import (Calibration, Config, Snapshot, calibrate, evaluate,
                           feature_series, main, markout, read_snapshots, simulate, split_indices)
+from research.replay_viewer import replay_payload, render_replay
 
 
 def market(count=200):
@@ -179,6 +181,68 @@ class ResearchTests(unittest.TestCase):
                 self.assertLess(max(bids), min(asks))
 
 
+class ReplayViewerTests(unittest.TestCase):
+    def report(self, rows=None, config=None):
+        rows = rows or [Snapshot(i, 100, 102, 100, 100) for i in range(8)]
+        config = config or Config(horizon=2, delay=1, fee_ticks=0.25, slippage_ticks=0.5)
+        execution = simulate(rows, [1] + [0] * (len(rows) - 1), 0,
+                             Calibration(0, 1, 0, 0, 0, None), config)
+        return {"config": asdict(config), "split": {"test_start": 0},
+                "units": {"pnl": "ticks * lots"},
+                "source": {"path": "synthetic.csv", "sha256": "a" * 64, "data_kind": "synthetic"},
+                "strategies": {"constant": {"execution": execution}}}
+
+    def test_recorded_fills_costs_and_negative_outcome_reconcile_without_mutation(self):
+        report = self.report()
+        before = json.dumps(report, sort_keys=True)
+        payload = replay_payload(report)
+        strategy = payload["strategies"]["constant"]
+        self.assertEqual([(f[0], f[2], f[3], f[4], f[5]) for f in strategy["fills"]],
+                         [(1, "Entry", "Buy", "102", "1"), (3, "Exit", "Sell", "100", "1")])
+        self.assertEqual(sum(f[6] for f in strategy["fills"]), strategy["totalFees"])
+        self.assertEqual(sum(f[7] for f in strategy["fills"]), strategy["totalSlippage"])
+        self.assertEqual(strategy["fills"][0][9], None)  # No future trade outcome at entry.
+        self.assertEqual(strategy["fills"][-1][9], -3.5)
+        self.assertEqual(strategy["realizedPnl"], -3.5)
+        self.assertEqual(strategy["points"][-1][2], -3.5)
+        self.assertEqual(json.dumps(report, sort_keys=True), before)
+
+    def test_partial_terminal_position_is_visible_without_inventing_a_closing_fill(self):
+        rows = [Snapshot(i, 100, 102, 1, 5) for i in range(5)]
+        report = self.report(rows, Config(horizon=2, delay=1, order_size=5, fee_ticks=0.25))
+        execution = report["strategies"]["constant"]["execution"]
+        self.assertIsNotNone(execution["open_trade"])
+        strategy = replay_payload(report)["strategies"]["constant"]
+        self.assertEqual(strategy["terminalInventory"], "3")
+        self.assertEqual([f[5] for f in strategy["fills"]], ["5", "1", "1"])
+        self.assertEqual(sum(f[6] for f in strategy["fills"]), execution["fees_ticks_lots"])
+        self.assertTrue(all(f[9] is None for f in strategy["fills"]))
+        self.assertEqual(len(strategy["fills"]), 1 + len(execution["open_trade"]["exit_fills"]))
+
+    def test_large_integer_prices_and_sequences_survive_browser_json_exactly(self):
+        offset = 10 ** 18
+        report = self.report([Snapshot(offset + i, offset + 100, offset + 102, 100, 100)
+                              for i in range(8)])
+        strategy = replay_payload(report)["strategies"]["constant"]
+        self.assertEqual(strategy["fills"][0][4], str(offset + 102))
+        self.assertEqual(strategy["fills"][0][1], str(offset + 1))
+        self.assertEqual(strategy["points"][0][1], str(offset))
+
+    def test_embedded_provenance_cannot_escape_json_script_and_flat_control_is_retained(self):
+        report = self.report()
+        report["source"]["path"] = '</script><script>window.injected=true</script>&'
+        fragment = render_replay(report)
+        encoded = re.search(r'<script id="replayData" type="application/json">(.*?)</script>',
+                            fragment, re.S).group(1)
+        self.assertNotIn("<", encoded)
+        self.assertEqual(json.loads(encoded)["source"], report["source"])
+        self.assertNotIn("<script>window.injected", fragment)
+        flat = evaluate(market(), Config())["strategies"]["flat"]
+        report["strategies"]["flat"] = flat
+        self.assertEqual(replay_payload(report)["strategies"]["flat"]["fills"], [])
+        self.assertEqual(replay_payload(report)["strategies"]["flat"]["realizedPnl"], 0)
+
+
 class ResearchOutputTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -251,6 +315,7 @@ class ResearchOutputTests(unittest.TestCase):
         report = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(report["split"]["total_observations"], 200)
         self.assertIn("<html", html.read_text(encoding="utf-8"))
+        self.assertIn('id="replayData"', html.read_text(encoding="utf-8"))
         before = output.read_bytes(), html.read_bytes()
         with self.assertRaises(SystemExit):
             self.run_cli(output, html)
