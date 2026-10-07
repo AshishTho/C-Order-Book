@@ -1,0 +1,8 @@
+{
+  "title": "Synthetic research reproduction notes",
+  "entries": [
+    {"kind": "command", "label": "Research tests", "text": "python -m unittest discover -s tests -p test_research.py -v", "exit_code": 0},
+    {"kind": "log", "label": "Illustrative output, not a claimed run", "text": "Example only: tests completed successfully."},
+    {"kind": "diff", "label": "Illustrative patch", "text": "--- a/example.py\n+++ b/example.py\n@@ -1 +1 @@\n-horizon = 0\n+horizon = 1\n"}
+  ]
+}
