@@ -1,13 +1,17 @@
 """Economic and leakage invariants, not golden-file performance targets."""
 
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
+import io
+import json
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 import unittest
 
 from research.generate import generate_events
 from research.lab import (Calibration, Config, Snapshot, calibrate, evaluate,
-                          feature_series, markout, read_snapshots, simulate, split_indices)
+                          feature_series, main, markout, read_snapshots, simulate, split_indices)
 
 
 def market(count=200):
@@ -172,6 +176,71 @@ class ResearchTests(unittest.TestCase):
                 bids = [x["price"] for x in live.values() if x["side"] == "B"]
                 asks = [x["price"] for x in live.values() if x["side"] == "S"]
                 self.assertLess(max(bids), min(asks))
+
+
+class ResearchOutputTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.source = self.root / "bbo.csv"
+        self.source.write_text("seq,bid_price,ask_price,bid_qty,ask_qty\n" + "".join(
+            f"{row.seq},{row.bid_price},{row.ask_price},{row.bid_qty},{row.ask_qty}\n"
+            for row in market()), encoding="utf-8")
+        self.source_bytes = self.source.read_bytes()
+
+    def run_cli(self, output, html=None):
+        args = ["--input", str(self.source), "--output", str(output), "--data-kind", "synthetic"]
+        if html is not None:
+            args.extend(["--html", str(html)])
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            return main(args)
+
+    def test_aliasing_input_or_outputs_is_rejected_before_writing(self):
+        output = self.root / "report.json"
+        for target, html in [(self.source, None), (output, self.source), (output, output),
+                             (self.root / "." / "bbo.csv", None)]:
+            with self.subTest(target=target, html=html), self.assertRaises(SystemExit) as caught:
+                self.run_cli(target, html)
+            self.assertEqual(caught.exception.code, 2)
+            self.assertEqual(self.source.read_bytes(), self.source_bytes)
+            self.assertFalse(output.exists())
+
+    def test_existing_json_or_html_preserves_all_evidence(self):
+        for existing_name in ("json", "html"):
+            with self.subTest(existing=existing_name):
+                output = self.root / (existing_name + ".json")
+                html = self.root / (existing_name + ".html")
+                existing = output if existing_name == "json" else html
+                untouched = html if existing_name == "json" else output
+                existing.write_bytes(b"previous evidence")
+                with self.assertRaises(SystemExit):
+                    self.run_cli(output, html)
+                self.assertEqual(existing.read_bytes(), b"previous evidence")
+                self.assertFalse(untouched.exists())
+                self.assertEqual(self.source.read_bytes(), self.source_bytes)
+
+    def test_fresh_reports_are_written_and_a_repeat_is_rejected(self):
+        output, html = self.root / "new" / "report.json", self.root / "new" / "report.html"
+        self.assertEqual(self.run_cli(output, html), 0)
+        report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["split"]["total_observations"], 200)
+        self.assertIn("<html", html.read_text(encoding="utf-8"))
+        before = output.read_bytes(), html.read_bytes()
+        with self.assertRaises(SystemExit):
+            self.run_cli(output, html)
+        self.assertEqual((output.read_bytes(), html.read_bytes()), before)
+        self.assertEqual(self.source.read_bytes(), self.source_bytes)
+
+    def test_file_created_during_evaluation_is_not_overwritten(self):
+        output = self.root / "report.json"
+        def competing_writer(*args, **kwargs):
+            output.write_bytes(b"concurrent evidence")
+            return evaluate(*args, **kwargs)
+        with patch("research.lab.evaluate", side_effect=competing_writer), self.assertRaises(SystemExit):
+            self.run_cli(output)
+        self.assertEqual(output.read_bytes(), b"concurrent evidence")
+        self.assertEqual(self.source.read_bytes(), self.source_bytes)
 
 
 if __name__ == "__main__":

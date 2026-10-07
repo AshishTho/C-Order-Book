@@ -431,14 +431,27 @@ body{{font:16px/1.55 system-ui;background:#101720;color:#e1e7ef;max-width:1100px
 <h2>Transaction-cost diagnostics</h2><p>Costs are ticks per lot per side, charged at entry and exit. JSON includes delay scenarios and every fill.</p>{''.join(panels)}
 <h2>Model contract & limitations</h2><ul>{assumptions}</ul><p>Reproduce with the accompanying JSON configuration and input SHA-256. No external assets, analytics, or network requests.</p></html>'''
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(document, encoding="utf-8")
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(document)
+
+
+def validate_output_paths(input_path: Path, output_path: Path,
+                          html_path: Path | None = None) -> None:
+    """Keep source data and previous research evidence intact."""
+    outputs = [output_path] + ([html_path] if html_path is not None else [])
+    resolved = [input_path.resolve(), *(path.resolve() for path in outputs)]
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("Input, JSON output and HTML output must use distinct paths")
+    for path in outputs:
+        if path.exists() or path.is_symlink():
+            raise ValueError(f"Output already exists: {path}; use a new path")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path, help="replay BBO CSV")
-    parser.add_argument("--output", required=True, type=Path, help="machine-readable JSON report")
-    parser.add_argument("--html", type=Path, help="optional self-contained HTML summary")
+    parser.add_argument("--output", required=True, type=Path, help="new machine-readable JSON report (never overwritten)")
+    parser.add_argument("--html", type=Path, help="new self-contained HTML summary (never overwritten)")
     parser.add_argument("--data-kind", required=True, choices=("synthetic", "historical"),
                         help="provenance declaration; historical does not certify source quality")
     parser.add_argument("--train-fraction", type=float, default=0.6)
@@ -456,13 +469,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     config = Config(**{key: getattr(args, key) for key in Config.__dataclass_fields__})
     try:
+        validate_output_paths(args.input, args.output, args.html)
         rows = read_snapshots(args.input)
         report = evaluate(rows, config, fee_grid=args.fee_grid, delay_grid=args.delay_grid)
         report["source"] = {"path": str(args.input), "data_kind": args.data_kind,
                             "sha256": hashlib.sha256(args.input.read_bytes()).hexdigest()}
         report["runtime"] = {"python": sys.version.split()[0], "research_version": 1}
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        document = json.dumps(report, indent=2, allow_nan=False) + "\n"
+        # Exclusive creation also protects a file created after preflight.
+        with args.output.open("x", encoding="utf-8") as stream:
+            stream.write(document)
         if args.html:
             write_html(report, args.html)
     except (ValueError, OSError) as exc:
