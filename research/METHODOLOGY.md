@@ -30,6 +30,13 @@ SHA-256. The research JSON includes the BBO input hash, parameters, Python
 version, split indices, training calibration, fills, full equity paths, and
 sensitivity results. HTML is a self-contained summary of that JSON.
 
+The report CLI requires distinct input, JSON and HTML paths, and refuses to
+overwrite existing outputs. Use new report filenames or a fresh run directory
+for each evaluation so source data and prior evidence remain intact. Exclusive
+file creation also rejects outputs created after the initial path check. The
+JSON and HTML are separate files, not an atomic pair: a later I/O failure can
+leave a newly created report; inspect it and use fresh paths for a retry.
+
 For your own data, export one instrument and one continuous session to:
 
 ```csv
