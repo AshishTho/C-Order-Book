@@ -3,6 +3,7 @@
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 import io
+import hashlib
 import json
 from unittest.mock import patch
 from pathlib import Path
@@ -195,6 +196,30 @@ class ResearchOutputTests(unittest.TestCase):
             args.extend(["--html", str(html)])
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             return main(args)
+
+    def test_source_hash_describes_analyzed_bytes_when_input_changes_during_evaluation(self):
+        output = self.root / "report.json"
+
+        def replace_source(rows, config, **kwargs):
+            self.assertEqual(rows, market())
+            self.source.write_bytes(self.source_bytes.replace(b",20,10", b",30,10"))
+            return evaluate(rows, config, **kwargs)
+
+        with patch("research.lab.evaluate", side_effect=replace_source):
+            self.assertEqual(self.run_cli(output), 0)
+        report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["source"]["sha256"], hashlib.sha256(self.source_bytes).hexdigest())
+        self.assertNotEqual(report["source"]["sha256"], hashlib.sha256(self.source.read_bytes()).hexdigest())
+
+    def test_source_hash_preserves_original_bom_and_line_endings(self):
+        payload = b"\xef\xbb\xbf" + self.source_bytes.replace(b"\n", b"\r\n")
+        self.source.write_bytes(payload)
+        output = self.root / "report.json"
+        self.assertEqual(self.run_cli(output), 0)
+        report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["source"]["sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(report["split"]["total_observations"], len(market()))
+        self.assertEqual(report["strategies"], evaluate(market(), Config())["strategies"])
 
     def test_aliasing_input_or_outputs_is_rejected_before_writing(self):
         output = self.root / "report.json"

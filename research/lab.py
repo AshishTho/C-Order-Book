@@ -13,13 +13,14 @@ import csv
 from dataclasses import asdict, dataclass, replace
 import hashlib
 import html
+import io
 import json
 import math
 from pathlib import Path
 import random
 import statistics
 import sys
-from typing import Sequence
+from typing import Iterable, Sequence
 
 
 SCHEMA = ("seq", "bid_price", "ask_price", "bid_qty", "ask_qty")
@@ -77,26 +78,38 @@ class Calibration:
 
 
 def read_snapshots(path: Path) -> list[Snapshot]:
-    result: list[Snapshot] = []
     with path.open(newline="", encoding="utf-8-sig") as stream:
-        reader = csv.DictReader(stream)
-        if (reader.fieldnames is None or any(x not in reader.fieldnames for x in SCHEMA)
-                or len(set(reader.fieldnames)) != len(reader.fieldnames)):
-            raise ValueError("BBO CSV requires columns: " + ",".join(SCHEMA))
-        for row in reader:
-            if None in row:
-                raise ValueError(f"line {reader.line_num}: too many CSV fields")
-            try:
-                observation = Snapshot(*(int(row[name]) for name in SCHEMA))
-            except (ValueError, TypeError) as exc:
-                raise ValueError(f"line {reader.line_num}: all BBO fields must be integers") from exc
-            if not 0 <= observation.seq < 2**64 or (result and observation.seq <= result[-1].seq):
-                raise ValueError(f"line {reader.line_num}: seq must strictly increase")
-            if not 0 < observation.bid_price < observation.ask_price < 2**63:
-                raise ValueError(f"line {reader.line_num}: require positive int64 bid_price < ask_price")
-            if not 0 < min(observation.bid_qty, observation.ask_qty) <= max(observation.bid_qty, observation.ask_qty) < 2**63:
-                raise ValueError(f"line {reader.line_num}: displayed quantities must be positive int64")
-            result.append(observation)
+        return _parse_snapshots(stream)
+
+
+def read_snapshot_source(path: Path) -> tuple[list[Snapshot], str]:
+    """Parse and fingerprint the same bytes, even if the path changes later."""
+    payload = path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    rows = _parse_snapshots(io.StringIO(payload.decode("utf-8-sig"), newline=""))
+    return rows, digest
+
+
+def _parse_snapshots(stream: Iterable[str]) -> list[Snapshot]:
+    result: list[Snapshot] = []
+    reader = csv.DictReader(stream)
+    if (reader.fieldnames is None or any(x not in reader.fieldnames for x in SCHEMA)
+            or len(set(reader.fieldnames)) != len(reader.fieldnames)):
+        raise ValueError("BBO CSV requires columns: " + ",".join(SCHEMA))
+    for row in reader:
+        if None in row:
+            raise ValueError(f"line {reader.line_num}: too many CSV fields")
+        try:
+            observation = Snapshot(*(int(row[name]) for name in SCHEMA))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"line {reader.line_num}: all BBO fields must be integers") from exc
+        if not 0 <= observation.seq < 2**64 or (result and observation.seq <= result[-1].seq):
+            raise ValueError(f"line {reader.line_num}: seq must strictly increase")
+        if not 0 < observation.bid_price < observation.ask_price < 2**63:
+            raise ValueError(f"line {reader.line_num}: require positive int64 bid_price < ask_price")
+        if not 0 < min(observation.bid_qty, observation.ask_qty) <= max(observation.bid_qty, observation.ask_qty) < 2**63:
+            raise ValueError(f"line {reader.line_num}: displayed quantities must be positive int64")
+        result.append(observation)
     if not result:
         raise ValueError("BBO CSV contains no observations")
     return result
@@ -470,10 +483,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = Config(**{key: getattr(args, key) for key in Config.__dataclass_fields__})
     try:
         validate_output_paths(args.input, args.output, args.html)
-        rows = read_snapshots(args.input)
+        rows, source_sha256 = read_snapshot_source(args.input)
         report = evaluate(rows, config, fee_grid=args.fee_grid, delay_grid=args.delay_grid)
         report["source"] = {"path": str(args.input), "data_kind": args.data_kind,
-                            "sha256": hashlib.sha256(args.input.read_bytes()).hexdigest()}
+                            "sha256": source_sha256}
         report["runtime"] = {"python": sys.version.split()[0], "research_version": 1}
         args.output.parent.mkdir(parents=True, exist_ok=True)
         document = json.dumps(report, indent=2, allow_nan=False) + "\n"

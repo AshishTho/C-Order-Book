@@ -30,6 +30,11 @@ SHA-256. The research JSON includes the BBO input hash, parameters, Python
 version, split indices, training calibration, fills, full equity paths, and
 sensitivity results. HTML is a self-contained summary of that JSON.
 
+The CLI parses and hashes the same input bytes in one read before evaluation.
+A later replacement of the CSV cannot change the recorded hash. The hash
+includes the original BOM and line endings; it describes the analyzed bytes,
+not a second reading of the path. Retain that input separately for reproduction.
+
 The report CLI requires distinct input, JSON and HTML paths, and refuses to
 overwrite existing outputs. Use new report filenames or a fresh run directory
 for each evaluation so source data and prior evidence remain intact. Exclusive
