@@ -19,8 +19,9 @@ This is a research and systems project. The bundled data is **synthetic**;
 the implementation does not establish live tradable alpha or production readiness.
 
 An optional, offline [Leakage Lab syntax check](research/LEAKAGE_CHECK.md) flags
-literal negative row shifts for review. This limited first rule never executes
-scanned code and does not certify a backtest as free of leakage.
+literal negative row shifts and centered fixed row windows for review. These
+limited heuristics never execute scanned code and do not certify a backtest as
+free of leakage.
 
 [Repro Capsule](research/REPRO_CAPSULE.md) previews manually supplied commands,
 logs and diffs before creating a local JSON evidence report. It flags some

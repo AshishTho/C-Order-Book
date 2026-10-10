@@ -1,4 +1,4 @@
-"""Offline syntax review for one explicit future-data pattern; never imports input."""
+"""Offline syntax review for explicit future-data patterns; never imports input."""
 
 import argparse
 import ast
@@ -9,11 +9,13 @@ from pathlib import Path
 MAX_BYTES = 1024 * 1024
 UNKNOWN = object()
 LIMITATIONS = [
-    "One syntax heuristic, not a leakage-free certification or a backtest audit.",
-    "Assumes pandas-like shift semantics and rows ordered from past to future; neither is verified.",
-    "Future labels may legitimately use negative shifts. A candidate is not proof of leakage.",
+    "Two syntax heuristics, not a leakage-free certification or a backtest audit.",
+    "Assumes pandas-like shift/rolling semantics and rows ordered from past to future; neither is verified.",
+    "Future labels and retrospective smoothing may legitimately use future rows. A candidate is not proof of leakage.",
     "No type, alias, dataflow, split, full-sample preprocessing or execution-timing analysis.",
-    "Dynamic arguments, frequency/index shifts and column shifts are not assessed by this rule.",
+    "Dynamic arguments, frequency/index shifts and column shifts are not assessed by LL001.",
+    "LL002 only assesses literal fixed row windows with literal boolean centering, default/right closure, "
+    "and default/row axis; other rolling options, aliases and downstream delays are not assessed.",
 ]
 
 
@@ -29,6 +31,49 @@ def literal(node):
             if isinstance(node.op, ast.UAdd):
                 return value
     return UNKNOWN
+
+
+def inspect_rolling(call):
+    """LL002: a deliberately small subset of pandas-like rolling call syntax."""
+    location = {"line": call.lineno, "column_utf8_byte": call.col_offset + 1, "rule": "LL002"}
+
+    def unassessed(reason):
+        return None, {**location, "reason": reason}
+
+    positional = ["window", "min_periods", "center"]
+    names = [k.arg for k in call.keywords]
+    if (None in names or len(set(names)) != len(names)
+            or any(isinstance(a, ast.Starred) for a in call.args)
+            or len(call.args) > len(positional)
+            or any(k not in {*positional, "axis", "closed"} for k in names)
+            or any(name in names for name in positional[:len(call.args)])):
+        return unassessed("ambiguous_or_unsupported_rolling_arguments")
+    arguments = dict(zip(positional, call.args))
+    arguments.update({k.arg: k.value for k in call.keywords})
+    values = {name: literal(node) for name, node in arguments.items()}
+    window = values.get("window", UNKNOWN)
+    center = values.get("center", False)
+    axis = values.get("axis", 0)
+    closed = values.get("closed", None)
+    minimum = values.get("min_periods", None)
+    if not (type(axis) is int and axis == 0 or type(axis) is str and axis == "index"):
+        return unassessed("column_or_dynamic_rolling_axis")
+    if not (closed is None or type(closed) is str and closed == "right"):
+        return unassessed("nondefault_or_dynamic_rolling_closure")
+    if type(window) is not int or window < 1:
+        return unassessed("nonpositive_noninteger_or_dynamic_rolling_window")
+    if type(center) is not bool:
+        return unassessed("nonliteral_boolean_rolling_center")
+    if not (minimum is None or type(minimum) is int and 0 <= minimum <= window):
+        return unassessed("unsupported_rolling_min_periods")
+    # Under default/right closure, widths 1 and 2 have no later row even when centered.
+    if center and window >= 3:
+        return {**location, "severity": "review", "window": window,
+                "message": "Centered row window can include later observations at an earlier row.",
+                "review": "If a rolling result enters a feature or decision, check when every row in the window "
+                          "became available. Retrospective smoothing or a sufficient downstream delay may be "
+                          "legitimate; neither dataflow nor delay is verified."}, None
+    return None, None
 
 
 def inspect_source(source):
@@ -71,7 +116,18 @@ def inspect_source(source):
                              "message": "Negative row shift can move later observations into earlier rows.",
                              "review": "If this value enters a feature or decision, check when it became available. "
                                        "If it is a future target, keep it out of features and review label overlap at splits."})
-    return {"shift_calls": len(calls), "findings": findings, "unassessed": unassessed}
+    rolling_calls = [n for n in ast.walk(tree)
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                     and n.func.attr == "rolling"]
+    for call in rolling_calls:
+        finding, unsupported = inspect_rolling(call)
+        if finding:
+            findings.append(finding)
+        if unsupported:
+            unassessed.append(unsupported)
+    order = lambda item: (item["line"], item["column_utf8_byte"])
+    return {"shift_calls": len(calls), "rolling_calls": len(rolling_calls),
+            "findings": sorted(findings, key=order), "unassessed": sorted(unassessed, key=order)}
 
 
 def scan_file(path):
@@ -96,7 +152,7 @@ def scan_file(path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Offline LL001 review candidates; no certification or source execution.")
+    parser = argparse.ArgumentParser(description="Offline LL001/LL002 review candidates; no certification or source execution.")
     parser.add_argument("files", nargs="+", help="1-20 explicitly selected UTF-8 Python files, at most 1 MiB each")
     args = parser.parse_args(argv)
     if len(args.files) > 20:
