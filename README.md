@@ -26,6 +26,10 @@ scanned code and does not certify a backtest as free of leakage.
 logs and diffs before creating a local JSON evidence report. It flags some
 possible secrets and never collects files, executes commands or uploads reports.
 
+An optional [walk-forward protocol](research/WALK_FORWARD.md) evaluates fixed inputs
+on successive future blocks and reuses the recorded replay inspector for one fold.
+The [trading backlog](docs/TRADING_BACKLOG.md) records the remaining bounded work.
+
 ## Reproduce the whole experiment
 
 Requirements: CMake 3.16+, a C++20 compiler, Python 3.10+. No Python packages
