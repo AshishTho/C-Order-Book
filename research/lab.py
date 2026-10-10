@@ -427,22 +427,30 @@ def write_html(report: dict, path: Path) -> None:
                           f'<td>{number(item["test_predictive"]["feature_markout_correlation"])}</td></tr>')
         sensitivity = "".join(f'<tr><td>{row["fee_ticks_per_lot_per_side"]}</td><td>{number(row["net_pnl_ticks_lots"])}</td></tr>'
                               for row in item["fee_sensitivity"])
-        panels.append(f'<details><summary>{name}: fees & calibration</summary><table><tr><th>Fee / side</th><th>Net PnL</th></tr>{sensitivity}</table>'
+        fee_table = (f'<table><tr><th>Fee / side</th><th>Net PnL</th></tr>{sensitivity}</table>'
+                     if sensitivity else '')
+        panels.append(f'<details><summary>{name}: costs & calibration</summary>{fee_table}'
                       f'<pre>{html.escape(json.dumps(item["train_calibration"], indent=2))}</pre></details>')
     source = html.escape(report.get("source", {}).get("path", "in-memory data"))
     label = html.escape(report.get("source", {}).get("data_kind", "unspecified"))
     assumptions = "".join(f"<li>{html.escape(value)}</li>" for value in report["assumptions"])
+    protocol_label = "Chronological holdout"
+    cost_note = "Costs are ticks per lot per side, charged at entry and exit. JSON includes delay scenarios and every fill."
+    if "fold" in report:
+        protocol_label = html.escape(f"Walk-forward fold {report['fold']} (independent): test indices "
+                                     f"[{report['split']['test_start']}, {report['split']['test_stop_exclusive']})")
+        cost_note = "No fee/delay sensitivity scenarios were computed for this fold. JSON includes every recorded fill."
     document = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Order Book Research — Holdout Report</title><style>
 body{{font:16px/1.55 system-ui;background:#101720;color:#e1e7ef;max-width:1100px;margin:auto;padding:30px}}h1{{font-size:38px;line-height:1.1}}h2{{margin-top:36px}}p,li{{color:#b9c6d8}}.badge{{color:#4dd9c0;letter-spacing:.12em;font-size:12px;text-transform:uppercase}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}th,td{{text-align:right;padding:12px;border-bottom:1px solid #2a3544}}th:first-child,td:first-child{{text-align:left}}th{{color:#90a0b5;font-size:13px}}.scroll{{overflow-x:auto}}svg{{background:#17212f;width:100%;border-radius:10px}}details{{border:1px solid #2a3544;padding:15px;margin:12px 0;border-radius:8px}}summary{{cursor:pointer}}pre{{white-space:pre-wrap;font-size:12px}}code{{overflow-wrap:anywhere}}.warning{{padding:16px;border-left:3px solid #ffba69;background:#211f1c}}</style>
 <div class="badge">C++ execution infrastructure × Python research</div><h1>Signals meet execution costs.</h1>
-<p>Chronological holdout · {report['split']['total_observations']:,} BBO observations · data: <strong>{label}</strong></p>
+<p>{protocol_label} · {report['split']['total_observations']:,} BBO observations · data: <strong>{label}</strong></p>
 <p class="warning">Research diagnostic, not evidence of tradable alpha. Synthetic fixtures validate plumbing and can contain mechanical patterns. Fees and event delay are scenario inputs.</p>
 <p>Source: <code>{source}</code><br>Train decisions end before index {report['split']['train_decision_stop_exclusive']}; test begins at index {report['split']['test_start']}. Embargo: {report['split']['embargo_observations']} observations.</p>
 <h2>Held-out equity · ticks × lots</h2><p>Midpoint accounting marks; all executions cross displayed quotes. Vertical range {number(low)} to {number(high)}. Horizontal axis is held-out observation order.</p>
 <svg viewBox="0 0 980 320" role="img" aria-label="Held-out strategy equity curves">{''.join(paths)}</svg>
 <div class="scroll"><table><tr><th>Strategy</th><th>Net PnL</th><th>Max drawdown</th><th>Round trips</th><th>Turnover</th><th>End inventory</th><th>Markout corr.</th></tr>{''.join(table_rows)}</table></div>
-<h2>Transaction-cost diagnostics</h2><p>Costs are ticks per lot per side, charged at entry and exit. JSON includes delay scenarios and every fill.</p>{''.join(panels)}
+<h2>Transaction-cost diagnostics</h2><p>{cost_note}</p>{''.join(panels)}
 {render_replay(report)}
 <h2>Model contract & limitations</h2><ul>{assumptions}</ul><p>Reproduce with the accompanying JSON configuration and input SHA-256. No external assets, analytics, or network requests.</p></html>'''
     path.parent.mkdir(parents=True, exist_ok=True)

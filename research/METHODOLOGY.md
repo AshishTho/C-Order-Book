@@ -121,7 +121,8 @@ delay sensitivity scenarios freeze the base training calibration. They are
 diagnostics, not new untouched holdouts. Selecting a strategy or scenario from
 these panels requires another unseen dataset before reporting generalization.
 
-This is a **single holdout**, not walk-forward cross-validation. It is a small,
+The default lab is a **single holdout**. An optional [walk-forward protocol](WALK_FORWARD.md)
+adds fixed-schedule independent future folds without strategy selection. The default remains a small,
 auditable starting protocol. Labels overlap, so the lab does not attach IID
 p-values to correlation or report an annualized Sharpe without clock-time and
 capital assumptions. A single seeded random path is a sanity check, not a
