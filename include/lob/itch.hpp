@@ -40,6 +40,8 @@
 
 #include "common.hpp"
 
+#include <cstring>   // std::memcpy (load_be16)
+
 #if defined(_MSC_VER)
 #  include <cstdlib>   // _byteswap_ushort / _ulong / _uint64
 #endif
@@ -72,8 +74,14 @@ LOB_FORCE_INLINE std::uint64_t bswap(std::uint64_t v) noexcept {
 }
 
 // Pointer-based big-endian load (used for the 2-byte framing prefix).
+// memcpy (not a uint16_t* cast): frame prefixes land on odd addresses after
+// the 31- and 23-byte messages, and a misaligned typed load is undefined
+// behaviour (UBSan -fsanitize=alignment). Compilers lower the 2-byte memcpy
+// to the same single unaligned MOV, so the generated code is unchanged.
 LOB_FORCE_INLINE std::uint16_t load_be16(const std::byte* p) noexcept {
-    return bswap(*reinterpret_cast<const std::uint16_t*>(p));
+    std::uint16_t v;
+    std::memcpy(&v, p, sizeof v);
+    return bswap(v);
 }
 
 // ---------------------------------------------------------------------------

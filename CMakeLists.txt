@@ -29,8 +29,19 @@ endif()
 add_library(lob INTERFACE)
 target_include_directories(lob INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+# CI/debug aid: -DLOB_SANITIZE=ON builds with AddressSanitizer + UBSan at -O1
+# (any UB report aborts, so ctest fails). Only meant for the test targets; the
+# benchmarks are never timed under sanitizers. Leave OFF for measurements.
+option(LOB_SANITIZE "Build with -fsanitize=address,undefined (-O1 -g)" OFF)
+
 if(MSVC)
     set(HOT_FLAGS /O2 /Ob3 /arch:AVX2 /GR- /EHs-c- /DNOMINMAX)
+elseif(LOB_SANITIZE)
+    set(LOB_SAN_FLAGS -fsanitize=address,undefined -fno-sanitize-recover=undefined
+                      -fno-omit-frame-pointer)
+    set(HOT_FLAGS -O1 -g -march=native -fno-exceptions -fno-rtti -fno-plt
+                  -Wall -Wextra ${LOB_SAN_FLAGS})
+    add_link_options(${LOB_SAN_FLAGS})
 else()
     set(HOT_FLAGS -O3 -march=native -fno-exceptions -fno-rtti -fno-plt
                   -Wall -Wextra)
@@ -40,6 +51,11 @@ endif()
 add_executable(test_correctness tests/test_correctness.cpp)
 target_link_libraries(test_correctness PRIVATE lob)
 target_compile_options(test_correctness PRIVATE ${HOT_FLAGS})
+
+# --- deterministic property tests (fixed-seed PRNG; see file header) ---
+add_executable(test_properties tests/test_properties.cpp)
+target_link_libraries(test_properties PRIVATE lob)
+target_compile_options(test_properties PRIVATE ${HOT_FLAGS})
 
 # --- RDTSC benchmark ---
 add_executable(bench_rdtsc bench/bench_rdtsc.cpp)
@@ -89,6 +105,7 @@ target_compile_options(bench_advanced_orders PRIVATE ${HOT_FLAGS})
 if(NOT MSVC)
     find_package(Threads REQUIRED)
     target_link_libraries(test_correctness PRIVATE Threads::Threads)
+    target_link_libraries(test_properties PRIVATE Threads::Threads)
     target_link_libraries(bench_rdtsc PRIVATE Threads::Threads)
     target_link_libraries(bench_itch_pipeline PRIVATE Threads::Threads)
     target_link_libraries(bench_zero_copy PRIVATE Threads::Threads)
@@ -100,6 +117,7 @@ if(NOT MSVC)
     if(WIN32)   # MinGW: fully static so no runtime DLL resolution
         target_link_options(bench_rdtsc PRIVATE -static)
         target_link_options(test_correctness PRIVATE -static)
+        target_link_options(test_properties PRIVATE -static)
         target_link_options(bench_itch_pipeline PRIVATE -static)
         target_link_options(bench_zero_copy PRIVATE -static)
         target_link_options(bench_trading_loop PRIVATE -static)
@@ -110,3 +128,4 @@ endif()
 
 enable_testing()
 add_test(NAME correctness COMMAND test_correctness)
+add_test(NAME properties  COMMAND test_properties)
