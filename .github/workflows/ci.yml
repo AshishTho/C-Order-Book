@@ -1,0 +1,72 @@
+name: CI
+
+# Build and test on every push and pull request. The benchmarks are compiled
+# (so they cannot rot) but never run here: shared CI runners are virtualised
+# and cannot give stable timings. See bench/README.md.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.compiler }} / ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        mode: [release, sanitize]
+        include:
+          - compiler: gcc
+            cxx: g++
+          - compiler: clang
+            cxx: clang++
+          # release: optimised build, plus all benchmark targets (compiled only)
+          - mode: release
+            build_type: Release
+            sanitize: "OFF"
+          # sanitize: Debug + AddressSanitizer/UBSan (-O1 -g, UB aborts the test)
+          - mode: sanitize
+            build_type: Debug
+            sanitize: "ON"
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          ${{ matrix.cxx }} --version
+          cmake --version
+
+      - name: Lower ASLR entropy for AddressSanitizer
+        if: matrix.mode == 'sanitize'
+        # Recent runner kernels use vm.mmap_rnd_bits=32, which some
+        # compiler-rt versions cannot map shadow memory under.
+        run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
+
+      - name: Configure (${{ matrix.build_type }}, LOB_SANITIZE=${{ matrix.sanitize }})
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DLOB_SANITIZE=${{ matrix.sanitize }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Build test_correctness and test_properties
+        run: cmake --build build --parallel --target test_correctness test_properties
+
+      - name: Run tests (ctest)
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
+      - name: Build every benchmark target (compile only, not run)
+        if: matrix.mode == 'release'
+        run: cmake --build build --parallel

@@ -94,6 +94,7 @@ does not change by one instruction when journaling is enabled.
 | `include/lob/bbo.hpp` / `signals.hpp` | Market data out | Diff-and-publish; OFI + micro-price in branchless fixed point |
 | `bench/*.cpp` | Proof suite | One RDTSC benchmark per phase; percentiles, verified business totals |
 | `tests/test_correctness.cpp` | Functional tests | Matching, priority, cancels, generation safety, cross-thread ring |
+| `tests/test_properties.cpp` | Property tests | Fixed-seed random sequences vs. a reference model; journal replay determinism; ITCH round trip; ring boundaries |
 
 ---
 
@@ -257,3 +258,23 @@ Run order (each is standalone; the suite is the proof of the phase claims):
 All benchmarks pin threads, pre-touch every page they will touch, calibrate
 the TSC against the steady clock, and report P50/P90/P99/P99.9/max with the
 measurement overhead subtracted.
+
+### Tests, CI and reproducible benchmark runs
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+ctest --test-dir build --output-on-failure      # test_correctness + test_properties
+
+# AddressSanitizer + UBSan build of the tests (any UB report fails the test)
+cmake -B build/san -DCMAKE_BUILD_TYPE=Debug -DLOB_SANITIZE=ON
+cmake --build build/san --target test_correctness test_properties
+ctest --test-dir build/san --output-on-failure
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs both configurations with GCC
+and Clang and compiles every benchmark target without running it. Benchmarks
+are only meaningful on a prepared machine: see [bench/README.md](bench/README.md)
+and `scripts/bench-report.sh`, which records commit, compiler, flags and CPU
+alongside whatever it measures. The latency figures in section 4 were measured
+on a different machine and must be regenerated with that script on the target
+machine before they are quoted or compared.
