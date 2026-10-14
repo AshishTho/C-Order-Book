@@ -163,6 +163,12 @@ uncertainty estimates are the next requirements before any alpha claim.
 For a concise demonstration and defensible project talking points, see the
 [interview guide](docs/INTERVIEW_GUIDE.md).
 
+For explicit test boundaries, a reserved final suffix and independent cost,
+delay, spread and depth cases, use the [walk-forward stress diagnostics](research/WALK_FORWARD_STRESS.md).
+The existing scheduled walk-forward API remains available. [Repro Capsule](research/REPRO_CAPSULE.md)
+also accepts manually declared experiment parameters and evidence hashes;
+it does not verify those hashes against files or execute supplied commands.
+
 ## References
 
 OFI follows the top-of-book event formulation in

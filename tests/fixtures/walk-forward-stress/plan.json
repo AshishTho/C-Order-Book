@@ -1,0 +1,30 @@
+{
+  "config": {
+    "horizon": 1,
+    "delay": 1,
+    "order_size": 10,
+    "threshold_quantile": 0,
+    "fee_ticks": 0,
+    "seed": 1
+  },
+  "folds": [
+    {
+      "test_start": 22,
+      "test_stop": 25
+    }
+  ],
+  "final_holdout_start": 25,
+  "fee_grid": [
+    0
+  ],
+  "delay_grid": [
+    1
+  ],
+  "spread_grid": [
+    0
+  ],
+  "depth_grid": [
+    1,
+    0.25
+  ]
+}

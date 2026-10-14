@@ -1,0 +1,913 @@
+{
+  "assumptions": [
+    "each fold trains on decisions [0, test_start - delay - horizon) and starts flat",
+    "features, calibration and simulation see only rows[:test_stop]",
+    "folds are independent diagnostics; PnL is not chained or summed across folds",
+    "stress dimensions vary independently against the base config, not a Cartesian sweep",
+    "trade and entry indices are global row indices",
+    "non-finite numeric values are reported as None"
+  ],
+  "boundaries": {
+    "final_holdout": {
+      "start": 25,
+      "stop": 26
+    },
+    "folds": [
+      {
+        "test_start": 22,
+        "test_stop": 25
+      }
+    ]
+  },
+  "calibration_policy": "frozen per fold from base config; stress cases reuse base features and calibration, including delay stress; labels only from base",
+  "configuration": {
+    "config": {
+      "delay": 1,
+      "fee_ticks": 0,
+      "horizon": 1,
+      "order_size": 10,
+      "seed": 1,
+      "slippage_ticks": 0.0,
+      "threshold_quantile": 0,
+      "train_fraction": 0.6
+    },
+    "min_train_decisions": 20,
+    "row_count": 26,
+    "stress_grids": {
+      "delay_observations": [
+        1
+      ],
+      "depth_fraction": [
+        1.0,
+        0.25
+      ],
+      "fee_ticks": [
+        0.0
+      ],
+      "spread_widening_ticks": [
+        0
+      ]
+    },
+    "train_fraction_used": false
+  },
+  "folds": [
+    {
+      "fold_index": 0,
+      "latest_train_label_index": 21,
+      "predictive_decision_stop": 23,
+      "reproduction_sha256": "a924f475e219e051a140f1aa12ae9556a680f3bfdd22ec8a5cddec3a7f031893",
+      "signals": {
+        "flat": {
+          "base_simulation": {
+            "completed_round_trips": 0,
+            "equity_curve": [
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 22,
+                "inventory_lots": 0,
+                "seq": 23
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 23,
+                "inventory_lots": 0,
+                "seq": 24
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 24,
+                "inventory_lots": 0,
+                "seq": 25
+              }
+            ],
+            "fees_ticks_lots": 0.0,
+            "max_drawdown_ticks_lots": 0.0,
+            "maximum_absolute_inventory_lots": 0,
+            "mean_trade_pnl_ticks_lots": null,
+            "net_pnl_ticks_lots": 0.0,
+            "open_trade": null,
+            "profit_factor": null,
+            "realized_round_trip_pnl_ticks_lots": 0,
+            "slippage_ticks_lots": 0.0,
+            "terminal_inventory_lots": 0,
+            "terminal_liquidation_mark_ticks_lots": 0.0,
+            "terminal_mark_warning": "Hypothetical quote valuation, not a fill; depth may be insufficient.",
+            "time_in_market_fraction": 0.0,
+            "trades": [],
+            "turnover_lots": 0,
+            "win_rate": null
+          },
+          "calibration": {
+            "correlation": null,
+            "direction": 0,
+            "feature_mean": 0.0,
+            "label_mean_ticks": 0.0,
+            "threshold": 0.0,
+            "train_count": 20
+          },
+          "predictive": {
+            "active_decisions": 0,
+            "decision_observations": 1,
+            "feature_markout_correlation": null,
+            "inference_warning": "Overlapping event-time labels; no IID p-value or annualized Sharpe.",
+            "mean_signed_markout_ticks": null,
+            "nonzero_markout_direction_accuracy": null,
+            "zero_markouts": 0
+          },
+          "stress_cases": [
+            {
+              "dimension": "base",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": null
+            },
+            {
+              "dimension": "fee_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.0
+            },
+            {
+              "dimension": "delay_observations",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1
+            },
+            {
+              "dimension": "spread_widening_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1.0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.25
+            }
+          ]
+        },
+        "imbalance": {
+          "base_simulation": {
+            "completed_round_trips": 0,
+            "equity_curve": [
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 22,
+                "inventory_lots": 0,
+                "seq": 23
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 23,
+                "inventory_lots": 0,
+                "seq": 24
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 24,
+                "inventory_lots": 0,
+                "seq": 25
+              }
+            ],
+            "fees_ticks_lots": 0.0,
+            "max_drawdown_ticks_lots": 0.0,
+            "maximum_absolute_inventory_lots": 0,
+            "mean_trade_pnl_ticks_lots": null,
+            "net_pnl_ticks_lots": 0.0,
+            "open_trade": null,
+            "profit_factor": null,
+            "realized_round_trip_pnl_ticks_lots": 0,
+            "slippage_ticks_lots": 0.0,
+            "terminal_inventory_lots": 0,
+            "terminal_liquidation_mark_ticks_lots": 0.0,
+            "terminal_mark_warning": "Hypothetical quote valuation, not a fill; depth may be insufficient.",
+            "time_in_market_fraction": 0.0,
+            "trades": [],
+            "turnover_lots": 0,
+            "win_rate": null
+          },
+          "calibration": {
+            "correlation": null,
+            "direction": 0,
+            "feature_mean": 0.0,
+            "label_mean_ticks": 0.0,
+            "threshold": 0.0,
+            "train_count": 20
+          },
+          "predictive": {
+            "active_decisions": 0,
+            "decision_observations": 1,
+            "feature_markout_correlation": null,
+            "inference_warning": "Overlapping event-time labels; no IID p-value or annualized Sharpe.",
+            "mean_signed_markout_ticks": null,
+            "nonzero_markout_direction_accuracy": null,
+            "zero_markouts": 0
+          },
+          "stress_cases": [
+            {
+              "dimension": "base",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": null
+            },
+            {
+              "dimension": "fee_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.0
+            },
+            {
+              "dimension": "delay_observations",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1
+            },
+            {
+              "dimension": "spread_widening_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1.0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.25
+            }
+          ]
+        },
+        "microprice": {
+          "base_simulation": {
+            "completed_round_trips": 0,
+            "equity_curve": [
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 22,
+                "inventory_lots": 0,
+                "seq": 23
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 23,
+                "inventory_lots": 0,
+                "seq": 24
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 24,
+                "inventory_lots": 0,
+                "seq": 25
+              }
+            ],
+            "fees_ticks_lots": 0.0,
+            "max_drawdown_ticks_lots": 0.0,
+            "maximum_absolute_inventory_lots": 0,
+            "mean_trade_pnl_ticks_lots": null,
+            "net_pnl_ticks_lots": 0.0,
+            "open_trade": null,
+            "profit_factor": null,
+            "realized_round_trip_pnl_ticks_lots": 0,
+            "slippage_ticks_lots": 0.0,
+            "terminal_inventory_lots": 0,
+            "terminal_liquidation_mark_ticks_lots": 0.0,
+            "terminal_mark_warning": "Hypothetical quote valuation, not a fill; depth may be insufficient.",
+            "time_in_market_fraction": 0.0,
+            "trades": [],
+            "turnover_lots": 0,
+            "win_rate": null
+          },
+          "calibration": {
+            "correlation": null,
+            "direction": 0,
+            "feature_mean": 0.0,
+            "label_mean_ticks": 0.0,
+            "threshold": 0.0,
+            "train_count": 20
+          },
+          "predictive": {
+            "active_decisions": 0,
+            "decision_observations": 1,
+            "feature_markout_correlation": null,
+            "inference_warning": "Overlapping event-time labels; no IID p-value or annualized Sharpe.",
+            "mean_signed_markout_ticks": null,
+            "nonzero_markout_direction_accuracy": null,
+            "zero_markouts": 0
+          },
+          "stress_cases": [
+            {
+              "dimension": "base",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": null
+            },
+            {
+              "dimension": "fee_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.0
+            },
+            {
+              "dimension": "delay_observations",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1
+            },
+            {
+              "dimension": "spread_widening_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1.0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.25
+            }
+          ]
+        },
+        "ofi": {
+          "base_simulation": {
+            "completed_round_trips": 0,
+            "equity_curve": [
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 22,
+                "inventory_lots": 0,
+                "seq": 23
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 23,
+                "inventory_lots": 0,
+                "seq": 24
+              },
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 24,
+                "inventory_lots": 0,
+                "seq": 25
+              }
+            ],
+            "fees_ticks_lots": 0.0,
+            "max_drawdown_ticks_lots": 0.0,
+            "maximum_absolute_inventory_lots": 0,
+            "mean_trade_pnl_ticks_lots": null,
+            "net_pnl_ticks_lots": 0.0,
+            "open_trade": null,
+            "profit_factor": null,
+            "realized_round_trip_pnl_ticks_lots": 0,
+            "slippage_ticks_lots": 0.0,
+            "terminal_inventory_lots": 0,
+            "terminal_liquidation_mark_ticks_lots": 0.0,
+            "terminal_mark_warning": "Hypothetical quote valuation, not a fill; depth may be insufficient.",
+            "time_in_market_fraction": 0.0,
+            "trades": [],
+            "turnover_lots": 0,
+            "win_rate": null
+          },
+          "calibration": {
+            "correlation": null,
+            "direction": 0,
+            "feature_mean": 0.0,
+            "label_mean_ticks": 0.0,
+            "threshold": 0.0,
+            "train_count": 20
+          },
+          "predictive": {
+            "active_decisions": 0,
+            "decision_observations": 1,
+            "feature_markout_correlation": null,
+            "inference_warning": "Overlapping event-time labels; no IID p-value or annualized Sharpe.",
+            "mean_signed_markout_ticks": null,
+            "nonzero_markout_direction_accuracy": null,
+            "zero_markouts": 0
+          },
+          "stress_cases": [
+            {
+              "dimension": "base",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": null
+            },
+            {
+              "dimension": "fee_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.0
+            },
+            {
+              "dimension": "delay_observations",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1
+            },
+            {
+              "dimension": "spread_widening_ticks",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 1.0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 0.0,
+                "net_pnl_ticks_lots": 0.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": 0.0,
+                "turnover_lots": 0
+              },
+              "value": 0.25
+            }
+          ]
+        },
+        "random": {
+          "base_simulation": {
+            "completed_round_trips": 1,
+            "equity_curve": [
+              {
+                "drawdown_ticks_lots": 0.0,
+                "equity_ticks_lots": 0.0,
+                "index": 22,
+                "inventory_lots": 0,
+                "seq": 23
+              },
+              {
+                "drawdown_ticks_lots": 10.0,
+                "equity_ticks_lots": -10.0,
+                "index": 23,
+                "inventory_lots": 10,
+                "seq": 24
+              },
+              {
+                "drawdown_ticks_lots": 20.0,
+                "equity_ticks_lots": -20.0,
+                "index": 24,
+                "inventory_lots": 0,
+                "seq": 25
+              }
+            ],
+            "fees_ticks_lots": 0,
+            "max_drawdown_ticks_lots": 20.0,
+            "maximum_absolute_inventory_lots": 10,
+            "mean_trade_pnl_ticks_lots": -20.0,
+            "net_pnl_ticks_lots": -20.0,
+            "open_trade": null,
+            "profit_factor": 0.0,
+            "realized_round_trip_pnl_ticks_lots": -20.0,
+            "slippage_ticks_lots": 0.0,
+            "terminal_inventory_lots": 0,
+            "terminal_liquidation_mark_ticks_lots": -20.0,
+            "terminal_mark_warning": "Hypothetical quote valuation, not a fill; depth may be insufficient.",
+            "time_in_market_fraction": 0.3333333333333333,
+            "trades": [
+              {
+                "decision_index": 22,
+                "decision_seq": 23,
+                "entry_index": 23,
+                "entry_price_ticks": 102,
+                "entry_seq": 24,
+                "exit_fills": [
+                  {
+                    "index": 24,
+                    "price_ticks": 100,
+                    "quantity": 10,
+                    "seq": 25
+                  }
+                ],
+                "exit_index": 24,
+                "net_pnl_ticks_lots": -20.0,
+                "quantity": 10,
+                "side": 1
+              }
+            ],
+            "turnover_lots": 20,
+            "win_rate": 0.0
+          },
+          "calibration": {
+            "correlation": null,
+            "direction": 1,
+            "feature_mean": -0.01860129437001622,
+            "label_mean_ticks": 0.0,
+            "threshold": 0.009129825816118098,
+            "train_count": 20
+          },
+          "predictive": {
+            "active_decisions": 1,
+            "decision_observations": 1,
+            "feature_markout_correlation": null,
+            "inference_warning": "Overlapping event-time labels; no IID p-value or annualized Sharpe.",
+            "mean_signed_markout_ticks": 0.0,
+            "nonzero_markout_direction_accuracy": null,
+            "zero_markouts": 1
+          },
+          "stress_cases": [
+            {
+              "dimension": "base",
+              "summary": {
+                "completed_round_trips": 1,
+                "fees_ticks_lots": 0,
+                "max_drawdown_ticks_lots": 20.0,
+                "net_pnl_ticks_lots": -20.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": -20.0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": -20.0,
+                "turnover_lots": 20
+              },
+              "value": null
+            },
+            {
+              "dimension": "fee_ticks",
+              "summary": {
+                "completed_round_trips": 1,
+                "fees_ticks_lots": 0.0,
+                "max_drawdown_ticks_lots": 20.0,
+                "net_pnl_ticks_lots": -20.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": -20.0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": -20.0,
+                "turnover_lots": 20
+              },
+              "value": 0.0
+            },
+            {
+              "dimension": "delay_observations",
+              "summary": {
+                "completed_round_trips": 1,
+                "fees_ticks_lots": 0,
+                "max_drawdown_ticks_lots": 20.0,
+                "net_pnl_ticks_lots": -20.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": -20.0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": -20.0,
+                "turnover_lots": 20
+              },
+              "value": 1
+            },
+            {
+              "dimension": "spread_widening_ticks",
+              "summary": {
+                "completed_round_trips": 1,
+                "fees_ticks_lots": 0,
+                "max_drawdown_ticks_lots": 20.0,
+                "net_pnl_ticks_lots": -20.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": -20.0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": -20.0,
+                "turnover_lots": 20
+              },
+              "value": 0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 1,
+                "fees_ticks_lots": 0,
+                "max_drawdown_ticks_lots": 20.0,
+                "net_pnl_ticks_lots": -20.0,
+                "open_trade": null,
+                "realized_round_trip_pnl_ticks_lots": -20.0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 0,
+                "terminal_liquidation_mark_ticks_lots": -20.0,
+                "turnover_lots": 20
+              },
+              "value": 1.0
+            },
+            {
+              "dimension": "depth_fraction",
+              "summary": {
+                "completed_round_trips": 0,
+                "fees_ticks_lots": 0,
+                "max_drawdown_ticks_lots": 12.0,
+                "net_pnl_ticks_lots": -12.0,
+                "open_trade": {
+                  "decision_index": 22,
+                  "decision_seq": 23,
+                  "entry_index": 23,
+                  "entry_price_ticks": 102,
+                  "entry_seq": 24,
+                  "exit_fills": [
+                    {
+                      "index": 24,
+                      "price_ticks": 100,
+                      "quantity": 2,
+                      "seq": 25
+                    }
+                  ],
+                  "quantity": 10,
+                  "side": 1
+                },
+                "realized_round_trip_pnl_ticks_lots": 0,
+                "slippage_ticks_lots": 0.0,
+                "terminal_inventory_lots": 8,
+                "terminal_liquidation_mark_ticks_lots": -20.0,
+                "turnover_lots": 12
+              },
+              "value": 0.25
+            }
+          ]
+        }
+      },
+      "test_start": 22,
+      "test_stop": 25,
+      "train_start": 0,
+      "train_stop": 20
+    }
+  ],
+  "input_sha256": "17fa20b3ba9c3fe5b79146628f9c835a5c394ec237968ab73bacf9c47ae258d9",
+  "schema_version": "walk_forward.v1",
+  "units": {
+    "delay": "BBO observations (not milliseconds)",
+    "depth_fraction": "scale of displayed top qty, floored, min 1, test rows only",
+    "fee": "ticks per lot per side",
+    "pnl": "ticks x lots",
+    "spread_widening": "integer stored ticks per side, test rows only"
+  },
+  "warnings": [
+    "config.train_fraction is ignored; explicit fold boundaries define training",
+    "reserved suffix [final_holdout_start, len(rows)) is never read for features, calibration, metrics or stress",
+    "open inventory at test_stop is reported as-is; terminal_liquidation_mark is hypothetical, not executable",
+    "no boundary auto-selection or winner selection is performed"
+  ]
+}

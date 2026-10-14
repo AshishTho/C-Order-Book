@@ -47,6 +47,31 @@ possible-secret flags require review, and 2 means a validation or file error.
 The command writes only when both `--write` and the matching confirmation hash
 are supplied; it never overwrites an existing file.
 
+## Optional experiment declarations
+
+A manifest can also contain `experiment`, with exactly `parameters` and
+`evidence`. Parameters contain 1–50 ASCII identifier keys (up to 64 characters)
+and scalar JSON values: null, booleans, integers, finite floats, or strings up to
+1,000 characters. Nested values and non-finite JSON numbers are rejected.
+Evidence contains 1–25 objects, each with a `label` of 1–200 characters and a
+lowercase, 64-character `sha256` supplied by the person preparing the manifest.
+
+```json
+"experiment": {
+  "parameters": {"seed": 1, "depth_fraction": 0.25},
+  "evidence": [{"label": "synthetic smoke report", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+}
+```
+
+The example hash is illustrative. The tool never reads a path named in a label
+or checks a declared hash against a file. Preview reports parameter count, a
+canonical parameter hash, and indexed declared evidence hashes while omitting
+parameter names, values and evidence labels. The existing possible-secret checks
+scan parameter JSON and labels; any flag blocks export. Changing any input byte
+invalidates confirmation. Confirmed exports preserve the declared experiment and
+explicitly mark the evidence hashes unverified. These manifests use schema 2;
+legacy manifests without an experiment remain schema 1.
+
 Tests cover inclusion preview, unchanged-input confirmation, exact evidence,
 non-execution, metadata/content flags, fixed error messages and overwrite refusal:
 

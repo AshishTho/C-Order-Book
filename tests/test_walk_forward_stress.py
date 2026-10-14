@@ -1,5 +1,6 @@
 import copy
 import dataclasses
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -225,6 +226,32 @@ class CliTests(unittest.TestCase):
                 self.write_plan(plan)
                 self.assertEqual(self.main(), 2)
                 self.assertFalse(self.out.exists())
+
+
+class RealCsvCliTests(unittest.TestCase):
+    def test_real_csv_hash_and_partial_depth_exit(self):
+        fixture = ROOT / 'tests' / 'fixtures' / 'walk-forward-stress'
+        source = fixture / 'terminal-depth.csv'
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'report.json'
+            argv = ['--input', str(source), '--plan', str(fixture / 'plan.json'),
+                    '--output', str(output)]
+            self.assertEqual(cli.main(argv), 0)
+            report = json.loads(output.read_text(encoding='utf-8'), parse_constant=self.fail)
+            self.assertEqual(report['input_sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
+            signals = report['folds'][0]['signals']
+            self.assertEqual(set(signals), set(SIGNALS))
+            random = signals['random']
+            self.assertEqual(random['base_simulation']['terminal_inventory_lots'], 0)
+            stress = next(case['summary'] for case in random['stress_cases']
+                          if case['dimension'] == 'depth_fraction' and case['value'] == .25)
+            self.assertEqual(stress['terminal_inventory_lots'], 8)
+            self.assertEqual(stress['net_pnl_ticks_lots'], -12)
+            self.assertEqual(stress['open_trade']['exit_fills'][0]['quantity'], 2)
+            before = output.read_bytes()
+            with mock.patch('sys.stderr'):
+                self.assertEqual(cli.main(argv), 2)
+            self.assertEqual(output.read_bytes(), before)
 
 
 if __name__ == '__main__':
