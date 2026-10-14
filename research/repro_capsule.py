@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 
@@ -20,6 +21,10 @@ LIMITATIONS = [
     "Metadata preview omits supplied text and labels; manually inspect the input before confirming its hash.",
     "No automatic redaction, file collection, environment capture, upload or reproducibility certification.",
 ]
+EXPERIMENT_LIMITATION = ("Declared evidence SHA-256 hashes have not been checked against any files; "
+                         "labels are inert text and named paths were not read.")
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
 class CapsuleError(ValueError):
@@ -39,16 +44,60 @@ def unique_object(pairs):
     return result
 
 
+def reject_constant(_name):
+    raise CapsuleError("nonfinite_json_constant")
+
+
+def finite_float(text):
+    value = float(text)
+    if not math.isfinite(value):
+        raise CapsuleError("nonfinite_json_number")
+    return value
+
+
+def canonical_parameters(parameters):
+    return json.dumps(parameters, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+
+
+def validate_experiment(experiment):
+    if not isinstance(experiment, dict) or set(experiment) != {"parameters", "evidence"}:
+        raise CapsuleError("experiment_fields_must_be_parameters_and_evidence")
+    parameters = experiment["parameters"]
+    if not isinstance(parameters, dict) or not 1 <= len(parameters) <= 50:
+        raise CapsuleError("expected_1_to_50_parameters")
+    for key, value in parameters.items():
+        if not IDENTIFIER.fullmatch(key):
+            raise CapsuleError("parameter_name_must_be_identifier")
+        if value is None or type(value) in (bool, int):
+            continue
+        if type(value) is float and math.isfinite(value):
+            continue
+        if type(value) is str and len(value) <= 1000:
+            continue
+        raise CapsuleError("parameter_value_must_be_finite_scalar_or_string_up_to_1000")
+    evidence = experiment["evidence"]
+    if not isinstance(evidence, list) or not 1 <= len(evidence) <= 25:
+        raise CapsuleError("expected_1_to_25_evidence_items")
+    for item in evidence:
+        if not isinstance(item, dict) or set(item) != {"label", "sha256"}:
+            raise CapsuleError("evidence_fields_must_be_label_and_sha256")
+        if not isinstance(item["label"], str) or not 1 <= len(item["label"]) <= 200:
+            raise CapsuleError("evidence_label_must_be_1_to_200_characters")
+        if not isinstance(item["sha256"], str) or not SHA256_HEX.fullmatch(item["sha256"]):
+            raise CapsuleError("evidence_sha256_must_be_64_lowercase_hex")
+
+
 def load_manifest(path):
     with Path(path).open("rb") as stream:
         raw = stream.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise CapsuleError("manifest_exceeds_1_MiB_limit")
     try:
-        data = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique_object)
+        data = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique_object,
+                          parse_constant=reject_constant, parse_float=finite_float)
     except (UnicodeError, json.JSONDecodeError, RecursionError):
         raise CapsuleError("invalid_utf8_json") from None
-    if not isinstance(data, dict) or set(data) != {"title", "entries"}:
+    if not isinstance(data, dict) or not {"title", "entries"} <= set(data) or set(data) - {"title", "entries", "experiment"}:
         raise CapsuleError("expected_title_and_entries_only")
     if not isinstance(data["title"], str) or not 1 <= len(data["title"]) <= 200:
         raise CapsuleError("title_must_be_1_to_200_characters")
@@ -66,7 +115,17 @@ def load_manifest(path):
             raise CapsuleError("text_must_be_1_to_262144_characters")
         if "exit_code" in entry and (entry["kind"] != "command" or type(entry["exit_code"]) is not int or not -2147483648 <= entry["exit_code"] <= 2147483647):
             raise CapsuleError("exit_code_requires_command_and_32_bit_integer")
+    if "experiment" in data:
+        validate_experiment(data["experiment"])
     return data, digest(raw)
+
+
+def schema_version(data):
+    return 2 if "experiment" in data else 1
+
+
+def limitations(data):
+    return LIMITATIONS + [EXPERIMENT_LIMITATION] if "experiment" in data else LIMITATIONS
 
 
 def preview(data, source_hash):
@@ -85,15 +144,29 @@ def preview(data, source_hash):
         included.append({"index": index, "kind": entry["kind"], "fields": sorted(entry),
                          "text_bytes": len(entry["text"].encode("utf-8")),
                          "text_sha256": digest(entry["text"].encode("utf-8"))})
-    return {"schema_version": 1, "mode": "preview", "manifest_sha256": source_hash,
-            "included_top_level_fields": ["title", "entries"], "included_entries": included,
-            "possible_secret_flags": flags, "can_export": not flags,
-            "certifies_secret_free": False, "limitations": LIMITATIONS}
+    report = {"schema_version": schema_version(data), "mode": "preview", "manifest_sha256": source_hash,
+              "included_top_level_fields": ["title", "entries"], "included_entries": included}
+    if "experiment" in data:
+        experiment = data["experiment"]
+        canonical = canonical_parameters(experiment["parameters"])
+        inspect(canonical, "experiment.parameters")
+        for index, item in enumerate(experiment["evidence"]):
+            inspect(item["label"], f"experiment.evidence[{index}].label")
+        report["included_top_level_fields"].append("experiment")
+        # Names, values and labels are deliberately omitted; only counts and hashes are shown.
+        report["experiment"] = {"parameter_count": len(experiment["parameters"]),
+                                "parameters_canonical_sha256": digest(canonical.encode("utf-8")),
+                                "declared_evidence": [{"index": index, "declared_sha256": item["sha256"]}
+                                                      for index, item in enumerate(experiment["evidence"])],
+                                "evidence_hashes_verified": False}
+    report.update({"possible_secret_flags": flags, "can_export": not flags,
+                   "certifies_secret_free": False, "limitations": limitations(data)})
+    return report
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Preview manually supplied evidence; export only after reviewing the input hash.")
-    parser.add_argument("manifest", help="UTF-8 JSON containing title and manual command/log/diff entries")
+    parser.add_argument("manifest", help="UTF-8 JSON containing title, manual command/log/diff entries and an optional declared experiment")
     parser.add_argument("--write", help="Create a new local JSON report; existing files are never overwritten")
     parser.add_argument("--confirm-sha256", help="Exact manifest hash from a prior preview")
     args = parser.parse_args(argv)
@@ -108,12 +181,14 @@ def main(argv=None):
             if report["possible_secret_flags"]:
                 print(json.dumps(report, indent=2))
                 return 1
-            capsule = {"schema_version": 1, "source_manifest_sha256": source_hash,
-                       "evidence_status": "manually_supplied_unverified", "limitations": LIMITATIONS,
+            capsule = {"schema_version": schema_version(data), "source_manifest_sha256": source_hash,
+                       "evidence_status": "manually_supplied_unverified", "limitations": limitations(data),
                        "declared_evidence": data}
+            if "experiment" in data:
+                capsule["experiment_evidence_hash_status"] = "declared_not_checked_against_files"
             # Exclusive creation also refuses an existing symlink or the source file.
             with Path(args.write).open("x", encoding="utf-8", newline="\n") as output:
-                json.dump(capsule, output, indent=2, ensure_ascii=True)
+                json.dump(capsule, output, indent=2, ensure_ascii=True, allow_nan=False)
                 output.write("\n")
             report["mode"] = "written"
         print(json.dumps(report, indent=2, ensure_ascii=True))

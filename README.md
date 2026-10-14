@@ -19,12 +19,17 @@ This is a research and systems project. The bundled data is **synthetic**;
 the implementation does not establish live tradable alpha or production readiness.
 
 An optional, offline [Leakage Lab syntax check](research/LEAKAGE_CHECK.md) flags
-literal negative row shifts for review. This limited first rule never executes
-scanned code and does not certify a backtest as free of leakage.
+literal negative row shifts and centered fixed row windows for review. These
+limited heuristics never execute scanned code and do not certify a backtest as
+free of leakage.
 
 [Repro Capsule](research/REPRO_CAPSULE.md) previews manually supplied commands,
 logs and diffs before creating a local JSON evidence report. It flags some
 possible secrets and never collects files, executes commands or uploads reports.
+
+An optional [walk-forward protocol](research/WALK_FORWARD.md) evaluates fixed inputs
+on successive future blocks and reuses the recorded replay inspector for one fold.
+The [trading backlog](docs/TRADING_BACKLOG.md) records the remaining bounded work.
 
 ## Reproduce the whole experiment
 
@@ -157,6 +162,12 @@ uncertainty estimates are the next requirements before any alpha claim.
 
 For a concise demonstration and defensible project talking points, see the
 [interview guide](docs/INTERVIEW_GUIDE.md).
+
+For explicit test boundaries, a reserved final suffix and independent cost,
+delay, spread and depth cases, use the [walk-forward stress diagnostics](research/WALK_FORWARD_STRESS.md).
+The existing scheduled walk-forward API remains available. [Repro Capsule](research/REPRO_CAPSULE.md)
+also accepts manually declared experiment parameters and evidence hashes;
+it does not verify those hashes against files or execute supplied commands.
 
 ## References
 
