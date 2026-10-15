@@ -1,5 +1,6 @@
 """Black-box reconstruction checks against a deliberately simple Python oracle."""
 import csv
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -101,6 +102,36 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = list(csv.reader(io.StringIO(data)))
         self.assertEqual([[int(v) for v in row] for row in rows[1:]], expected)
+
+
+class ReplayRepeatabilityTests(unittest.TestCase):
+    def test_exact_replay_is_byte_repeatable_on_same_host(self):
+        events = HEADER + SEED_BOOK + "3,E,1,-,0,5\n4,X,2,-,0,7\n5,D,1,-,0,0\n6,A,3,B,101,9\n"
+        with tempfile.TemporaryDirectory() as temp:
+            src = Path(temp) / "events.csv"
+            src.write_text(events, encoding="utf-8")
+            payload = src.read_bytes()
+            outputs, digests = [], set()
+            for run in range(3):
+                dst = Path(temp) / f"bbo_{run}.csv"
+                self.assertFalse(dst.exists())
+                result = subprocess.run([BINARY, "--input", str(src), "--output", str(dst)],
+                                        text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(Path(str(dst) + ".partial").exists())
+                self.assertEqual(src.read_bytes(), payload)
+                raw = dst.read_bytes()
+                self.assertTrue(raw)
+                summary = json.loads(result.stdout)
+                self.assertEqual({k: summary[k] for k in ("events", "snapshots", "live_orders")},
+                                 {"events": 6, "snapshots": 4, "live_orders": 2})
+                outputs.append(raw)
+                digests.add(hashlib.sha256(raw).hexdigest())
+        self.assertEqual(outputs[1:], outputs[:1] * 2)
+        self.assertEqual(len(digests), 1)
+        rows = list(csv.reader(io.StringIO(outputs[0].decode("utf-8"))))
+        self.assertEqual(rows[1:], [["2", "100", "102", "20", "30"], ["3", "100", "102", "15", "30"],
+                                    ["4", "100", "102", "15", "23"], ["6", "101", "102", "9", "23"]])
 
 
 if __name__ == "__main__":
