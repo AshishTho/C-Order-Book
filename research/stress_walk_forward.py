@@ -7,6 +7,7 @@ import math
 from numbers import Real
 
 from research.lab import SIGNALS, Snapshot, calibrate, feature_series, predictive_metrics, simulate
+from research.preflight import validate_preflight
 
 SCHEMA_VERSION = 'walk_forward.v1'
 MIN_TRAIN_DECISIONS = 20
@@ -104,15 +105,18 @@ def _summary(sim):
     return {k: sim.get(k) for k in _SUMMARY_KEYS}
 
 
-def _digest(prefix, config, fold, grids):
+def _digest(prefix, config, fold, grids, inputs=None):
     payload = {'rows': [dataclasses.asdict(r) for r in prefix], 'config': dataclasses.asdict(config),
                'fold': fold, 'scenarios': grids}
+    if inputs is not None:  # only custom runs; keeps default digests byte-identical
+        payload['inputs'] = inputs
     text = json.dumps(_json_safe(payload), sort_keys=True, separators=(',', ':'), allow_nan=False)
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 def evaluate_walk_forward(rows, config, folds, final_holdout_start, *, fee_grid=(0, 0.5),
-                          delay_grid=(1, 2, 5), spread_grid=(0, 1), depth_grid=(1.0, 0.25)):
+                          delay_grid=(1, 2, 5), spread_grid=(0, 1), depth_grid=(1.0, 0.25),
+                          timestamps=None, feature_data=None):
     rows = tuple(rows)
     if not all(isinstance(r, Snapshot) for r in rows):
         raise ValueError('rows must be Snapshot instances')
@@ -126,6 +130,10 @@ def evaluate_walk_forward(rows, config, folds, final_holdout_start, *, fee_grid=
     grids = _grids(fee_grid, delay_grid, spread_grid, depth_grid)
     folds = _validate_folds(folds, holdout)
     lag = config.delay + config.horizon
+    pre = validate_preflight(rows, config, folds, holdout,
+                             tuple(sorted({config.delay, *grids['delay_observations']})),
+                             timestamps=timestamps, feature_data=feature_data)
+    custom = timestamps is not None or feature_data is not None
     results = []
     for k, fold in enumerate(folds):
         start, stop = fold['test_start'], fold['test_stop']
@@ -136,7 +144,16 @@ def evaluate_walk_forward(rows, config, folds, final_holdout_start, *, fee_grid=
             if stop - d - config.horizon <= start:
                 raise ValueError(f'fold {k}: no test decisions for delay {d}')
         prefix = list(rows[:stop])
-        features = feature_series(prefix, seed=config.seed)
+        if pre['features'] is None:
+            features = feature_series(prefix, seed=config.seed)
+        else:
+            features = {s: list(v[:stop]) for s, v in pre['features'].items()}
+        inputs = None
+        if custom:
+            inputs = {'clock': pre['clock'], 'markers': list(pre['markers'][:stop]),
+                      'features': None if pre['features'] is None else features,
+                      'availability': None if pre['availability'] is None else
+                      {s: list(v[:stop]) for s, v in pre['availability'].items()}}
         spread_rows = {w: _stress_rows(prefix, start, stop, widen=w) for w in grids['spread_widening_ticks']}
         depth_rows = {f: _stress_rows(prefix, start, stop, depth=f) for f in grids['depth_fraction']}
         signals = {}
@@ -168,7 +185,7 @@ def evaluate_walk_forward(rows, config, folds, final_holdout_start, *, fee_grid=
                         'train_start': 0, 'train_stop': train_stop,
                         'latest_train_label_index': train_stop - 1 + lag,
                         'predictive_decision_stop': stop - lag,
-                        'reproduction_sha256': _digest(prefix, config, fold, grids),
+                        'reproduction_sha256': _digest(prefix, config, fold, grids, inputs),
                         'signals': signals})
     return _json_safe({
         'schema_version': SCHEMA_VERSION,
@@ -184,6 +201,10 @@ def evaluate_walk_forward(rows, config, folds, final_holdout_start, *, fee_grid=
         'assumptions': [
             'each fold trains on decisions [0, test_start - delay - horizon) and starts flat',
             'features, calibration and simulation see only rows[:test_stop]',
+            *(() if feature_data is None else (
+                'supplied features used; available_at is a caller declaration checked <= row marker, '
+                'provenance not externally verified',)),
+            *(() if timestamps is None else ('caller timestamps validated nonnegative and ordered',)),
             'folds are independent diagnostics; PnL is not chained or summed across folds',
             'stress dimensions vary independently against the base config, not a Cartesian sweep',
             'trade and entry indices are global row indices',
