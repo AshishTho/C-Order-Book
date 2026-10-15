@@ -18,11 +18,12 @@
 #include <algorithm>
 #include <limits>
 #include <random>
+#include <cstdint>
 
 #define CHECK(cond)                                                          \
     do {                                                                     \
         if (!(cond)) {                                                       \
-            std::fprintf(stderr, "FAILED: %s  (%s:%d)\n", #cond, __FILE__,   \
+            check_context_note(); std::fprintf(stderr, "FAILED: %s  (%s:%d)\n", #cond, __FILE__,   \
                          __LINE__);                                          \
             std::abort();                                                    \
         }                                                                    \
@@ -36,6 +37,22 @@ static constexpr Price BASE = 100'000;  // ladder covers [100000, 101023] ticks
 
 static std::vector<Trade> g_trades;
 static void collect(const Trade& t) { g_trades.push_back(t); }
+
+// Scoped replay context: CHECK prints seed/step only while a ReplayScope is live.
+struct ReplayContext { std::uint64_t seed; int step; };
+static const ReplayContext* g_replay = nullptr;
+static void check_context_note() {
+    if (g_replay)
+        std::fprintf(stderr, "  replay: seed=%llu step=%d\n",
+                     static_cast<unsigned long long>(g_replay->seed), g_replay->step);
+}
+struct ReplayScope {
+    const ReplayContext* prev;
+    explicit ReplayScope(const ReplayContext* c) : prev(g_replay) { g_replay = c; }
+    ~ReplayScope() { g_replay = prev; }
+    ReplayScope(const ReplayScope&) = delete;
+    ReplayScope& operator=(const ReplayScope&) = delete;
+};
 
 // ---------------------------------------------------------------------------
 static void test_memory_pool() {
@@ -394,10 +411,13 @@ static void test_randomized_reference() {
     constexpr Price WIDTH = 64;
     for (const std::uint64_t seed : {7ull, 42ull, 20261004ull}) {
         std::mt19937_64 rng(seed);
+        ReplayContext ctx{seed, 0};
+        ReplayScope replay_scope(&ctx);
         Book book(BASE);
         std::vector<RefOrder> orders;
         std::vector<OrderId> historical_ids;
         for (int step = 0; step < 12'000; ++step) {
+            ctx.step = step;
             g_trades.clear();
             std::vector<Trade> expected_trades;
             const auto operation = rng() % 10;
@@ -472,9 +492,59 @@ static void test_randomized_reference() {
             }
             CHECK(book.best_bid() == bid && book.best_ask() == ask);
             for (Price p = 0; p < WIDTH; ++p) CHECK(book.level_qty(BASE + p) == depth[p]);
+            // Deterministic step-based invalid-quantity injections; no rng draws.
+            if (step % 97 == 0) {
+                const Price inj_price = BASE + static_cast<Price>(step % WIDTH);
+                const bool inj_post_only = (step / 97) % 2 == 1;
+                for (const Side inj_side : {Side::Buy, Side::Sell}) {
+                    for (const Qty bad : {Qty{0}, Qty{-1}, -static_cast<Qty>(step) - 2}) {
+                        g_trades.clear();
+                        CHECK(book.new_order(inj_side, inj_price, bad, collect, inj_post_only) == 0);
+                        CHECK(g_trades.empty());
+                    }
+                }
+                CHECK(book.best_bid() == bid && book.best_ask() == ask);
+                for (Price p = 0; p < WIDTH; ++p) CHECK(book.level_qty(BASE + p) == depth[p]);
+            }
         }
     }
     std::puts("  reference model (36K operations) OK");
+}
+
+// Cancel+new at the same price loses priority: older resting orders fill first.
+static void test_cancel_replace_fifo() {
+    Book book(BASE);
+    g_trades.clear();
+    const Price px = BASE + 10;
+    const auto a = book.new_order(Side::Sell, px, 5, collect);
+    const auto b = book.new_order(Side::Sell, px, 7, collect);
+    const auto c = book.new_order(Side::Sell, px, 3, collect);
+    for (const auto id : {a, b, c}) CHECK(id != 0 && id != ~OrderId{0});
+    CHECK(book.level_qty(px) == 15);
+    CHECK(book.best_ask() == px && book.best_bid() == -1);
+
+    CHECK(book.cancel(a));
+    const auto a2 = book.new_order(Side::Sell, px, 4, collect);
+    CHECK(a2 != 0 && a2 != ~OrderId{0} && a2 != a);
+    CHECK(g_trades.empty());
+    CHECK(book.level_qty(px) == 14);
+    CHECK(!book.cancel(a));
+    CHECK(book.reduce(a, 1) == 0);
+    CHECK(book.execute(a, 1) == 0);
+    CHECK(book.level_qty(px) == 14);
+
+    CHECK(book.new_order(Side::Buy, px, 12, collect) == ~OrderId{0});
+    CHECK(g_trades.size() == 3);
+    CHECK(g_trades[0].maker_id == b && g_trades[0].price == px && g_trades[0].qty == 7);
+    CHECK(g_trades[1].maker_id == c && g_trades[1].price == px && g_trades[1].qty == 3);
+    CHECK(g_trades[2].maker_id == a2 && g_trades[2].price == px && g_trades[2].qty == 2);
+    CHECK(book.level_qty(px) == 2);
+    CHECK(book.best_ask() == px && book.best_bid() == -1);
+    CHECK(!book.cancel(a) && !book.cancel(b) && !book.cancel(c));
+    CHECK(book.cancel(a2));
+    CHECK(book.level_qty(px) == 0 && book.best_ask() == -1);
+    g_trades.clear();
+    std::puts("  cancel+new same-price FIFO OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +676,7 @@ int main() {
     test_advanced_orders();
     test_risk_boundaries();
     test_randomized_reference();
+    test_cancel_replace_fifo();
     test_itch_parser();
     test_spsc_ring();
     std::puts("ALL TESTS PASSED");
