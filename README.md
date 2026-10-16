@@ -31,6 +31,35 @@ An optional [walk-forward protocol](research/WALK_FORWARD.md) evaluates fixed in
 on successive future blocks and reuses the recorded replay inspector for one fold.
 The [trading backlog](docs/TRADING_BACKLOG.md) records the remaining bounded work.
 
+## Run the demo
+
+Needs only Python 3.10+: no cmake, packages, network or credentials.
+
+```sh
+python scripts/demo.py --output-dir demo-out --seed 42
+```
+
+In well under a minute it generates 2,000 seeded synthetic L3 events, rebuilds a
+timed top of book with a simple Python reference book, writes a provenance
+manifest, runs the data-quality check, runs the walk-forward evaluation twice
+(`baseline`: fee 0.1; `high_costs`: fee 0.5 and slippage 0.25 ticks per lot per
+side), and compares the two reports. Everything goes into `demo-out/`:
+`DEMO_RESULTS.md` (command, Python version, seed, dataset size, wall time per
+step, comparison table with comparability flags, limitations), the walk-forward
+reports `baseline.json` and `high_costs.json`, `comparison.json`/`.md`,
+`manifest.json`, `data_quality.json`, the policy, and the CSV data. Omit
+`--output-dir` to use a new temporary directory; `python -m research.demo` is
+equivalent. A non-empty directory is refused unless `--force` is given, which
+replaces only the demo's own files.
+
+The same seed gives byte-identical JSON files on the same Python version (wall
+times appear only in `DEMO_RESULTS.md`); another seed changes the data hash and
+the comparison flags it `different-sample`. The cost variant is expected to be
+flagged `different-costs`. This is synthetic data only, with no transaction-level
+market impact; results are not evidence of profitability and nothing here is
+ready for live trading. The C++ matching engine is not exercised by the demo;
+use the cmake study below for that.
+
 ## Reproduce the whole experiment
 
 Requirements: CMake 3.16+, a C++20 compiler, Python 3.10+. No Python packages
