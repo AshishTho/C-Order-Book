@@ -48,8 +48,6 @@ def _check_folds(folds, holdout, config, delays):
             errors.append(f'fold {i}: overlaps or precedes previous fold')
         if start - lag < MIN_TRAIN:
             errors.append(f'fold {i}: fewer than {MIN_TRAIN} training rows before label lag')
-        if (start - lag - 1) + lag >= start:
-            errors.append(f'fold {i}: latest training label reaches test window')
         for d in sorted(all_delays):
             if stop - d - config.horizon <= start:
                 errors.append(f'fold {i}: no test decision for delay {d}')
