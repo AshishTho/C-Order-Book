@@ -178,6 +178,37 @@ accurate, and anyone who rewrites an input together with its declared hash and
 the manifest hash is not detected. Source text and timestamps are declarations,
 not verified facts. Marked rows are evaluated unchanged, only disclosed.
 
+## Comparing research runs
+
+```sh
+python -m research.compare reports/base.json reports/other.json \
+  [--baseline NAME] [--format text|json|markdown] [--manifest NAME=PATH]
+```
+
+Run names are report file stems; the first run is the baseline unless
+`--baseline` names another. A sibling `REPORT.manifest.json` (from
+`--write-manifest`) is picked up automatically. Each run is checked against the
+baseline, and every pair of runs is listed, with named reasons:
+
+- `different-sample`: the declared input SHA-256 sets differ, or without
+  provenance the declared row count, window, data-quality policy, source
+  checksum or fold anchors differ.
+- `unverified-sample`: no usable manifest on one side (absent, edited body, or
+  not listing the report's input); only declared fields matched.
+- `different-costs`: the cost model or fee/slippage ticks differ.
+- `different-metrics`: the report format, units or metric fields differ.
+- `different-splits`: the split protocol or fold schedule differs.
+
+Strategy parameters such as horizon, delay or threshold are listed as parameter
+changes, not reasons. All runs stay in the table. Incompatible runs keep their
+values but get no deltas or labels. Runs that are worse than the baseline on a
+metric are kept and labelled `worse` and flagged `worse-than-baseline`. Nothing
+is ranked and no winner is declared. Deltas are run minus baseline per fold,
+strategy and metric, each with its per-fold sample size, and are not
+significance-tested. The comparison checks the manifest body hash but does not
+re-hash inputs; use `research.provenance verify` for that. Exit code is 0 for
+any completed comparison and 2 for unreadable or unrecognised input.
+
 ## Scope and next research steps
 
 The flat ladder covers a configured 65,536-tick interval; the replay tool holds
