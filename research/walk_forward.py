@@ -4,22 +4,29 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Sequence
 
+from research import data_quality, provenance
 from research.lab import (Config, SIGNALS, Snapshot, calibrate, feature_series,
                           predictive_metrics, read_snapshot_source, simulate,
                           validate_output_paths, write_html)
 
 
 def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
-                          initial_train: int, test_size: int) -> dict:
+                          initial_train: int, test_size: int,
+                          timestamps: Sequence | None = None, quality_policy: dict | None = None) -> dict:
     """Freeze each calibration before its non-overlapping future test block.
 
     Folds are independent flat-start simulations. Prior test rows become eligible
     history for later folds, only after their labels are observable. No scores
     choose hyperparameters, signals, costs, or the fold schedule.
+
+    Optional quality_policy (with timestamps) applies research.data_quality first;
+    any rejected row stops evaluation with DataQualityError, marked rows are kept
+    unchanged and disclosed under "data_quality".
     """
     config.validate()
     margin = config.delay + config.horizon
@@ -27,6 +34,12 @@ def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
         raise ValueError("initial_train and test_size must allow 20 decisions after delay+horizon")
     if len(rows) < initial_train + test_size:
         raise ValueError("need at least one complete future test block")
+    quality = None
+    if quality_policy is not None or timestamps is not None:
+        if quality_policy is None or timestamps is None:
+            raise ValueError("quality_policy and timestamps must be supplied together")
+        quality = data_quality.require_evaluable(
+            data_quality.apply_policy(rows, quality_policy, timestamps=timestamps))
     parameters = asdict(config)
     parameters.pop("train_fraction")  # Explicit observation counts replace the single-holdout fraction.
     result = {"schema_version": 1, "protocol": "expanding_history_independent_folds",
@@ -78,7 +91,33 @@ def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
         result["folds"].append(fold)
     consumed = result["folds"][-1]["split"]["test_stop_exclusive"]
     result["unused_tail"] = {"start": consumed, "stop_exclusive": len(rows), "observations": len(rows) - consumed}
+    if quality is not None:
+        result["data_quality"] = data_quality.summarize(quality)
+        for fold in result["folds"]:
+            stop = fold["split"]["test_stop_exclusive"]
+            fold["data_quality_marked_indices"] = [item["index"] for item in quality["marked"]
+                                                   if item["index"] < stop]
     return result
+
+
+def _manifest_path(input_path: Path, root: Path) -> str:
+    relative = os.path.relpath(input_path.resolve(), root.resolve()).replace(os.sep, "/")
+    return provenance.check_relative_path(relative, "input path relative to manifest")
+
+
+def _require_verified_input(manifest_path: Path, input_path: Path) -> dict:
+    """Refuse to run unless every manifest input re-hashes and --input is one of them."""
+    manifest = provenance.load_json(manifest_path)
+    report = provenance.verify_manifest(manifest, manifest_path.parent)
+    if not report["valid"]:
+        raise ValueError(f"manifest verification failed; refusing to run: changed={report['changed']} "
+                         f"missing={report['missing']} manifest_hash_ok={report['manifest_hash_ok']} "
+                         f"affected_experiments={report['affected_experiments']}")
+    wanted = _manifest_path(input_path, manifest_path.parent)
+    for item in manifest["inputs"]:
+        if item["path"] == wanted:
+            return item
+    raise ValueError(f"--input {input_path} is not an input of manifest {manifest_path}")
 
 
 def main(argv=None):
@@ -97,24 +136,71 @@ def main(argv=None):
     parser.add_argument("--slippage-ticks", type=float, default=0.0)
     parser.add_argument("--order-size", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--manifest", type=Path,
+                        help="existing provenance manifest; refuse to run unless every input re-hashes "
+                             "and --input is listed (paths relative to the manifest's directory)")
+    parser.add_argument("--write-manifest", action="store_true",
+                        help="also create OUTPUT.manifest.json recording inputs, steps and parameters")
+    parser.add_argument("--input-source", help="free-text input origin for --write-manifest")
+    parser.add_argument("--input-retrieved-at", help="ISO 8601 time with offset for --write-manifest")
+    parser.add_argument("--experiment-id", default="walk_forward", help="experiment id for --write-manifest")
+    parser.add_argument("--data-quality", type=Path,
+                        help="JSON policy; requires a 'timestamp' seconds column and stops on rejected rows")
     args = parser.parse_args(argv)
     config = Config(**{key: getattr(args, key) for key in Config.__dataclass_fields__ if key != "train_fraction"})
+    manifest_out = args.output.with_name(args.output.name + ".manifest.json")
     try:
+        if args.write_manifest and not (args.input_source and args.input_retrieved_at):
+            raise ValueError("--write-manifest requires --input-source and --input-retrieved-at")
         validate_output_paths(args.input, args.output, args.html)
-        rows, source_hash = read_snapshot_source(args.input)
-        report = evaluate_walk_forward(rows, config, initial_train=args.initial_train, test_size=args.test_size)
+        if args.write_manifest and (manifest_out.exists() or manifest_out.is_symlink()):
+            raise ValueError(f"Output already exists: {manifest_out}; use a new path")
+        declared = _require_verified_input(args.manifest, args.input) if args.manifest else None
+        policy = timestamps = None
+        if args.data_quality:
+            policy = data_quality.load_policy(args.data_quality)
+            rows, timestamps, source_hash = data_quality.read_timed_snapshot_source(args.input)
+        else:
+            rows, source_hash = read_snapshot_source(args.input)
+        if declared is not None and declared["sha256"] != source_hash:
+            raise ValueError("input changed after manifest verification; refusing to run")
+        report = evaluate_walk_forward(rows, config, initial_train=args.initial_train, test_size=args.test_size,
+                                       timestamps=timestamps, quality_policy=policy)
         if not 0 <= args.html_fold < len(report["folds"]):
             raise ValueError("html-fold must name an evaluated fold")
         report["source"] = {"path": str(args.input), "sha256": source_hash, "data_kind": args.data_kind}
         report["runtime"] = {"python": sys.version.split()[0], "walk_forward_version": 1}
+        if args.manifest:
+            report["provenance"] = {"verified_manifest": str(args.manifest), "status": "inputs_rehashed_and_matched"}
         for fold in report["folds"]:
             fold["source"] = report["source"].copy()
+        manifest = None
+        if args.write_manifest:
+            root = manifest_out.parent
+            root.mkdir(parents=True, exist_ok=True)  # POSIX cannot traverse '..' from a missing directory.
+            inputs = [{"path": _manifest_path(args.input, root), "source": args.input_source,
+                       "retrieved_at": args.input_retrieved_at}]
+            steps = [{"name": "research.lab.read_snapshot_source", "parameters": {}}]
+            if policy is not None:
+                inputs.append({"path": _manifest_path(args.data_quality, root), "source": "data-quality policy file",
+                               "retrieved_at": args.input_retrieved_at})
+                steps = [{"name": "research.data_quality.read_timed_snapshot_source", "parameters": {}},
+                         {"name": "research.data_quality.apply_policy", "parameters": policy}]
+            parameters = {**report["config"], "initial_train": args.initial_train,
+                          "test_size": args.test_size, "data_kind": args.data_kind}
+            steps.append({"name": "research.walk_forward.evaluate_walk_forward", "parameters": parameters})
+            manifest = provenance.build_manifest(inputs, steps, {"id": args.experiment_id, "parameters": parameters},
+                                                 root=root)
+            if manifest["inputs"][0]["sha256"] != source_hash:
+                raise ValueError("input changed while building the manifest; nothing written")
         document = json.dumps(report, indent=2, allow_nan=False) + "\n"
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8") as stream:
             stream.write(document)
         if args.html:
             write_html(report["folds"][args.html_fold], args.html)
+        if manifest is not None:
+            provenance.write_manifest(manifest, manifest_out)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     print(f"Wrote {len(report['folds'])} independent folds; unused tail: {report['unused_tail']['observations']} rows")

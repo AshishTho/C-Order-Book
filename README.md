@@ -146,6 +146,38 @@ The `historical` flag is a provenance declaration, not data verification.
 See [event and engine contracts](docs/DESIGN.md) and
 [research methodology](research/METHODOLOGY.md) before interpreting results.
 
+## Provenance manifests and data-quality policy
+
+`research/provenance.py` records each input file's SHA-256 and byte size, its
+declared source and retrieval time (ISO 8601 with offset), the ordered
+transformations with sorted-JSON parameters, the experiments that use each
+input, and a hash of the whole manifest. Verification re-hashes every input;
+declared hashes are never trusted on their own.
+
+```sh
+python -m research.provenance build --spec spec.json --output manifest.json
+python -m research.provenance verify manifest.json   # exit 0 only when valid
+python -m research.walk_forward --input data/bbo.csv --output reports/run.json \
+  --data-kind synthetic --initial-train 60 --test-size 40 --write-manifest \
+  --input-source "synthetic:generate.py seed=7" --input-retrieved-at 2026-10-16T09:00:00+00:00
+python -m research.walk_forward ... --manifest reports/run.json.manifest.json
+```
+
+A changed or missing input invalidates the manifest and lists the affected
+experiment ids; `--manifest` then refuses to run. `--data-quality policy.json`
+declares `max_gap_seconds`, `max_staleness_seconds`, `on_gap` (`reject` or
+`mark`) and `forward_fill_limit_seconds`, and requires a `timestamp` column in
+seconds. Gaps longer than the forward-fill limit and stale quotes are rejected or
+marked; crossed, locked and empty books are always rejected; any rejected row
+stops evaluation with an explicit error. Forward fill only bridges a gap with the
+last observed quote up to the limit; it never inserts rows.
+
+Limitations: only synthetic fixtures have been exercised. Checksums detect
+change, not correctness: a valid manifest says nothing about whether the data is
+accurate, and anyone who rewrites an input together with its declared hash and
+the manifest hash is not detected. Source text and timestamps are declarations,
+not verified facts. Marked rows are evaluated unchanged, only disclosed.
+
 ## Scope and next research steps
 
 The flat ladder covers a configured 65,536-tick interval; the replay tool holds
