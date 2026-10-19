@@ -1,10 +1,12 @@
 """Provenance manifests: re-hashing, change attribution, CLI exit codes, walk-forward gate."""
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -218,6 +220,156 @@ class ProvenanceTests(unittest.TestCase):
         code, out = quiet(provenance.main, ["verify", str(elsewhere)])
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out)["missing"], ["a.csv", "data/b.csv"])
+
+
+class ManifestPublicationTests(unittest.TestCase):
+    SENTINEL = b"existing evidence\x00\xff"
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        (self.root / "input.csv").write_bytes(b"synthetic input\n")
+        self.spec = self.root / "spec.json"
+        self.spec.write_text(json.dumps({
+            "inputs": [{"path": "input.csv", "source": "synthetic", "retrieved_at": STAMP}],
+            "transformations": [], "experiment": {"id": "e", "parameters": {}}}), encoding="utf-8")
+        self.output = self.root / "out" / "manifest.json"
+        self.output.parent.mkdir()
+        self.referent = self.root / "referent.bin"
+
+    def run_cli(self):
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+            code = provenance.main(["build", "--spec", str(self.spec), "--output", str(self.output),
+                                    "--root", str(self.root)])
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_no_staging(self):
+        self.assertEqual(list(self.output.parent.glob(".provenance-manifest-*")), [])
+
+    def make_competitor(self, kind):
+        if kind == "file":
+            self.output.write_bytes(self.SENTINEL)
+        elif kind == "directory":
+            self.output.mkdir()
+            (self.output / "keep.bin").write_bytes(self.SENTINEL)
+        else:
+            if kind == "symlink":
+                self.referent.write_bytes(self.SENTINEL)
+            try:
+                self.output.symlink_to(self.referent)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+    def assert_competitor(self, kind):
+        if kind == "file":
+            self.assertEqual(self.output.read_bytes(), self.SENTINEL)
+        elif kind == "directory":
+            self.assertEqual((self.output / "keep.bin").read_bytes(), self.SENTINEL)
+        else:
+            self.assertTrue(self.output.is_symlink())
+            self.assertEqual(self.output.readlink(), self.referent)
+            if kind == "symlink":
+                self.assertEqual(self.referent.read_bytes(), self.SENTINEL)
+            else:
+                self.assertFalse(self.referent.exists())
+
+    def existing_collision(self, kind):
+        self.make_competitor(kind)
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 2, err)
+        self.assertEqual(out, "")
+        self.assertTrue(err)
+        self.assert_competitor(kind)
+        self.assert_no_staging()
+
+    def late_collision(self, kind):
+        real_link = os.link
+
+        def compete_then_link(source, destination):
+            # A complete, valid artifact must be staged before publication.
+            manifest = provenance.load_json(source)
+            self.assertTrue(verify_manifest(manifest, self.root)["valid"])
+            self.make_competitor(kind)
+            return real_link(source, destination)
+
+        with patch.object(os, "link", side_effect=compete_then_link) as publish:
+            code, out, err = self.run_cli()
+        publish.assert_called_once()
+        self.assertEqual(code, 2, err)
+        self.assertEqual(out, "")
+        self.assertTrue(err)
+        self.assert_competitor(kind)
+        self.assert_no_staging()
+
+    def test_existing_file_is_preserved(self):
+        self.existing_collision("file")
+
+    def test_existing_directory_is_preserved(self):
+        self.existing_collision("directory")
+
+    def test_existing_symlink_and_referent_are_preserved(self):
+        self.existing_collision("symlink")
+
+    def test_existing_dangling_symlink_does_not_create_referent(self):
+        self.existing_collision("dangling")
+
+    def test_late_file_is_preserved(self):
+        self.late_collision("file")
+
+    def test_late_directory_is_preserved(self):
+        self.late_collision("directory")
+
+    def test_late_symlink_and_referent_are_preserved(self):
+        self.late_collision("symlink")
+
+    def test_late_dangling_symlink_does_not_create_referent(self):
+        self.late_collision("dangling")
+
+    def test_interrupted_write_does_not_leave_partial_manifest(self):
+        real_open, attempts = Path.open, []
+
+        @contextmanager
+        def interrupted_stream(path, *args, **kwargs):
+            with real_open(path, *args, **kwargs) as stream:
+                def write(text):
+                    attempts.append(path)
+                    stream.write(text[:7])
+                    raise OSError("synthetic interrupted write")
+                yield SimpleNamespace(write=write)
+
+        def open_stream(path, *args, **kwargs):
+            if path.name == "manifest.json" and args and args[0] == "x":
+                return interrupted_stream(path, *args, **kwargs)
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", open_stream):
+            code, out, err = self.run_cli()
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("synthetic interrupted write", err)
+        self.assertFalse(self.output.exists())
+        self.assert_no_staging()
+
+    def test_link_failure_leaves_no_output_or_staging(self):
+        with patch.object(os, "link", side_effect=OSError("synthetic unsupported hard link")) as publish:
+            code, out, err = self.run_cli()
+        publish.assert_called_once()
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("synthetic unsupported hard link", err)
+        self.assertFalse(self.output.exists())
+        self.assert_no_staging()
+
+    def test_fresh_manifest_roundtrip_cleans_staging(self):
+        code, out, err = self.run_cli()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["written"], str(self.output))
+        code, report = quiet(provenance.main, ["verify", str(self.output), "--root", str(self.root)])
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(report)["valid"])
+        self.assert_no_staging()
 
 
 class WalkForwardManifestTests(unittest.TestCase):
