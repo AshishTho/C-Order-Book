@@ -3,6 +3,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -22,7 +23,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.repeats <= 100:
         parser.error("--repeats must be 1..100")
-    if args.output.exists():
+    if args.output.exists() or args.output.is_symlink():
         parser.error("Output exists; choose a new path to preserve previous evidence")
     build = args.build_dir.resolve()
     cache = build / "CMakeCache.txt"
@@ -53,7 +54,18 @@ def main():
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         report["error"] = str(error)
     finally:
-        args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        try:
+            # Publish a complete file without replacing any destination entry.
+            # Windows open("x") can follow a dangling symlink; a hard link does
+            # not. Stage beside the output so both names are on the same volume.
+            with tempfile.TemporaryDirectory(prefix=".benchmark-report-", dir=args.output.parent) as temp:
+                staged = Path(temp) / "report.json"
+                staged.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                os.link(staged, args.output)
+        except FileExistsError:
+            parser.error("Output exists; choose a new path to preserve previous evidence")
+        except OSError as error:
+            parser.error(f"Could not save benchmark evidence: {error}")
     if "error" in report:
         parser.error(report["error"])
     print(args.output)
