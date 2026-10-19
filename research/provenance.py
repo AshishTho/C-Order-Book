@@ -276,10 +276,13 @@ def load_json(path: Path | str):
 
 def write_manifest(manifest: dict, path: Path | str) -> None:
     """Exclusive creation: an existing manifest is never overwritten."""
+    serialized = json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    if len(serialized.encode("utf-8")) > MAX_MANIFEST_BYTES:
+        raise ManifestError("serialized manifest exceeds size limit")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8", newline="\n") as stream:
-        stream.write(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n")
+        stream.write(serialized)
 
 
 def main(argv=None) -> int:

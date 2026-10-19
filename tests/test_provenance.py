@@ -139,6 +139,56 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaises(ManifestError):
                 verify_manifest(broken, self.root)
 
+    def test_cli_rejects_expanded_manifest_before_creating_output(self):
+        for name, parameters in (("unicode", {"note": "\u00e9" * 256}),
+                                 ("pretty", {"values": list(range(64))})):
+            with self.subTest(name=name):
+                self.experiments[0]["parameters"] = parameters
+                spec = self.root / f"{name}-spec.json"
+                spec.write_text(json.dumps({"inputs": self.inputs, "transformations": self.steps,
+                                            "experiment": self.experiments}, ensure_ascii=False,
+                                           separators=(",", ":")), encoding="utf-8")
+                manifest = self.build()
+                emitted = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True,
+                                      allow_nan=False) + "\n").encode("utf-8")
+                limit = len(emitted) - 1
+                self.assertLess(spec.stat().st_size, limit)
+                target = self.root / name / "manifest.json"
+                with patch.object(provenance, "MAX_MANIFEST_BYTES", limit), \
+                        redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                    code = provenance.main(["build", "--spec", str(spec), "--output", str(target),
+                                            "--root", str(self.root)])
+                self.assertEqual(code, 2)
+                self.assertIn("size limit", err.getvalue())
+                self.assertEqual(out.getvalue(), "")
+                self.assertFalse(target.parent.exists())
+
+    def test_writer_rejects_one_byte_over_limit_without_creating_directories(self):
+        manifest = self.build()
+        emitted = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True,
+                              allow_nan=False) + "\n").encode("utf-8")
+        target = self.root / "absent" / "nested" / "manifest.json"
+        with patch.object(provenance, "MAX_MANIFEST_BYTES", len(emitted) - 1):
+            with self.assertRaisesRegex(ManifestError, "size limit"):
+                provenance.write_manifest(manifest, target)
+        self.assertFalse((self.root / "absent").exists())
+
+    def test_exact_size_limit_preserves_format_and_cli_roundtrip(self):
+        self.experiments[0]["parameters"]["note"] = "\u00e9\n"
+        manifest = self.build()
+        emitted = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True,
+                              allow_nan=False) + "\n").encode("utf-8")
+        target = self.root / "exact.json"
+        with patch.object(provenance, "MAX_MANIFEST_BYTES", len(emitted)):
+            provenance.write_manifest(manifest, target)
+            self.assertEqual(target.read_bytes(), emitted)
+            code, out = quiet(provenance.main, ["verify", str(target)])
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(out)["valid"])
+            with self.assertRaises(FileExistsError):
+                provenance.write_manifest(manifest, target)
+            self.assertEqual(target.read_bytes(), emitted)
+
     def test_cli_build_and_verify_exit_codes(self):
         spec = self.root / "spec.json"
         spec.write_text(json.dumps({"inputs": self.inputs, "transformations": self.steps,
