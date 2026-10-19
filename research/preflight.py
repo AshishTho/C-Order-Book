@@ -1,7 +1,7 @@
 """Pure preflight validation for walk-forward evaluation inputs (stdlib only, no I/O)."""
 import math
 
-from research.lab import SIGNALS, Snapshot
+from research.lab import SIGNALS, Snapshot, validate_snapshot_rows
 
 MIN_TRAIN = 20
 MAX_ABS_VALUE = 1e150  # conservative input magnitude cap; does not certify downstream arithmetic
@@ -100,7 +100,7 @@ def _check_features(feature_data, clock, markers, need):
 def validate_preflight(rows, config, folds, holdout, delays, *, timestamps=None, feature_data=None):
     """Validate evaluation inputs; return normalized copies or raise ValueError.
 
-    Checks shape/causality declarations only; cannot prove external provenance.
+    Checks book validity and causality declarations; cannot prove external provenance.
     """
     try:
         config.validate()
@@ -109,10 +109,8 @@ def validate_preflight(rows, config, folds, holdout, delays, *, timestamps=None,
     except Exception as exc:
         raise ValueError(f'invalid config: {exc}') from None
     rows = _seq_of(rows, 'rows')
-    if not all(isinstance(r, Snapshot) for r in rows):
-        raise ValueError('rows must be Snapshot instances')
+    validate_snapshot_rows(rows)
     seqs = tuple(r.seq for r in rows)
-    _increasing_ints(seqs, 'seq', upper=2 ** 64)
     if not _is_int(holdout) or not 0 < holdout < len(rows):
         raise ValueError('holdout must be an int with 0 < holdout < len(rows)')
     delays = _seq_of(delays, 'delays')
