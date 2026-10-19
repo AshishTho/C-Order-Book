@@ -86,13 +86,51 @@ class BenchmarkCaptureTests(unittest.TestCase):
                 self.assertEqual(self.output.read_bytes(), self.evidence)
                 self.output.unlink()
 
-    def test_concurrent_symlink_does_not_create_target(self):
-        target = self.root / "missing-target"
-        code, _, error, calls = self.invoke(during_run=lambda: self.make_symlink(target))
+    def test_concurrent_symlink_preserves_existing_or_missing_target(self):
+        # Check capability outside a subTest so an unavailable privilege skips
+        # the whole test before benchmark.main's final publication can run.
+        self.make_symlink(self.root / "capability-probe")
+        self.output.unlink()
+        for child_code in (0, 7):
+            for target_exists in (False, True):
+                with self.subTest(child_code=child_code, target_exists=target_exists):
+                    target = self.root / f"target-{child_code}-{target_exists}"
+                    if target_exists:
+                        target.write_bytes(self.evidence)
+                    code, _, error, calls = self.invoke(
+                        returncode=child_code, during_run=lambda: self.make_symlink(target))
+                    self.assertEqual((code, calls), (2, 1))
+                    self.assertIn("preserve previous evidence", error)
+                    self.assertTrue(self.output.is_symlink())
+                    self.assertEqual(target.exists(), target_exists)
+                    if target_exists:
+                        self.assertEqual(target.read_bytes(), self.evidence)
+                    self.output.unlink()
+                    self.assertEqual(list(self.root.glob(".benchmark-report-*")), [])
+
+    def test_competing_writer_at_publication_boundary_is_preserved(self):
+        real_link = benchmark.os.link
+
+        def claim_output(source, destination):
+            self.assertEqual(json.loads(Path(source).read_text())["runs"][0]["stdout"], "raw stdout\n")
+            self.output.write_bytes(self.evidence)
+            return real_link(source, destination)
+
+        for child_code in (0, 7):
+            with self.subTest(child_code=child_code), mock.patch.object(benchmark.os, "link", claim_output):
+                code, _, error, calls = self.invoke(returncode=child_code)
+                self.assertEqual((code, calls), (2, 1))
+                self.assertIn("preserve previous evidence", error)
+                self.assertEqual(self.output.read_bytes(), self.evidence)
+                self.assertEqual(list(self.root.glob(".benchmark-report-*")), [])
+                self.output.unlink()
+
+    def test_concurrent_directory_is_preserved(self):
+        code, _, error, calls = self.invoke(during_run=self.output.mkdir)
         self.assertEqual((code, calls), (2, 1))
-        self.assertIn("preserve previous evidence", error)
-        self.assertTrue(self.output.is_symlink())
-        self.assertFalse(target.exists())
+        self.assertTrue(self.output.is_dir())
+        self.assertTrue(error)
+        self.assertEqual(list(self.root.glob(".benchmark-report-*")), [])
 
     def test_fresh_report_preserves_raw_evidence_and_metadata(self):
         code, _, error, calls = self.invoke(repeats=2)
@@ -102,6 +140,7 @@ class BenchmarkCaptureTests(unittest.TestCase):
         self.assertEqual(report["requested_config"], "Debug")
         self.assertEqual(report["cmake_cache"], "fixture build metadata")
         self.assertEqual(len(report["runs"]), 2)
+        self.assertEqual(list(self.root.glob(".benchmark-report-*")), [])
         for repeat, run in enumerate(report["runs"]):
             self.assertEqual(run, {"target": "risk", "repeat": repeat, "returncode": 0,
                                    "binary_sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest(),
@@ -117,19 +156,13 @@ class BenchmarkCaptureTests(unittest.TestCase):
         self.assertEqual(report["runs"][0]["stderr"], "raw stderr\n")
 
     def test_publication_error_is_reported_without_success(self):
-        real_open = Path.open
-
-        def deny_publication(path, mode="r", *args, **kwargs):
-            if path == self.output and mode == "x":
-                raise PermissionError("fixture write denied")
-            return real_open(path, mode, *args, **kwargs)
-
-        with mock.patch.object(Path, "open", deny_publication):
+        with mock.patch.object(benchmark.os, "link", side_effect=PermissionError("fixture link denied")):
             code, stdout, error, calls = self.invoke()
         self.assertEqual((code, calls), (2, 1))
         self.assertIn("Could not save benchmark evidence", error)
         self.assertNotIn(str(self.output), stdout)
         self.assertFalse(self.output.exists())
+        self.assertEqual(list(self.root.glob(".benchmark-report-*")), [])
 
 
 if __name__ == "__main__":
