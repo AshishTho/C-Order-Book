@@ -22,7 +22,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.repeats <= 100:
         parser.error("--repeats must be 1..100")
-    if args.output.exists():
+    if args.output.exists() or args.output.is_symlink():
         parser.error("Output exists; choose a new path to preserve previous evidence")
     build = args.build_dir.resolve()
     cache = build / "CMakeCache.txt"
@@ -53,7 +53,15 @@ def main():
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         report["error"] = str(error)
     finally:
-        args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        try:
+            # Recheck at publication: another writer may have claimed this path
+            # while the benchmarks ran. Exclusive creation also rejects symlinks.
+            with args.output.open("x", encoding="utf-8") as output:
+                output.write(json.dumps(report, indent=2) + "\n")
+        except FileExistsError:
+            parser.error("Output exists; choose a new path to preserve previous evidence")
+        except OSError as error:
+            parser.error(f"Could not save benchmark evidence: {error}")
     if "error" in report:
         parser.error(report["error"])
     print(args.output)
