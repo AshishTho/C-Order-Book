@@ -7,11 +7,12 @@ that are worse than the baseline stay in the table, visibly labelled; nothing is
 filtered out, ranked or declared a winner. Differences are descriptive only: no
 significance test is computed.
 
-Input identity uses the declared SHA-256 set of a provenance manifest. The
-manifest body hash is checked, but inputs are not re-hashed here; use
-`python -m research.provenance verify` for that. Without a usable manifest only
-the declared row count, window and fold anchors can be compared, and the run is
-flagged unverified-sample.
+Input identity checks each report's source SHA-256 as well as the declared
+SHA-256 set of its provenance manifest. The manifest body hash is checked,
+but inputs are not re-hashed here; use `python -m research.provenance verify`
+for that. Declared row count, window, data-quality policy and fold anchors are
+checked even when manifests match. Without a usable manifest or report source
+checksum, an otherwise matching sample is flagged unverified-sample.
 
 Usage (exit 0 for any completed comparison, 2 for unreadable input):
   python -m research.compare base.json other.json [--baseline NAME]
@@ -50,7 +51,7 @@ NOTES = [
     "n is the per-fold sample named by sample_basis; overlapping labels and shared history make it "
     "not independent evidence.",
     "Folds are independent experiments; no PnL is summed or chained across folds.",
-    "Input identity compares declared manifest checksums; inputs are not re-hashed by this comparison.",
+    "Input identity compares declared manifest and report source checksums; no input files are re-hashed here.",
 ]
 
 
@@ -185,28 +186,29 @@ def _differences(run: dict, base: dict) -> dict:
     """Named reasons (in REASONS order) with the baseline and run values behind each."""
     found = {}
     a, b = run["provenance"]["input_sha256"], base["provenance"]["input_sha256"]
-    rows = (run["sample"]["row_count"], base["sample"]["row_count"])
+    mine, theirs = run["sample"], base["sample"]
+    keys = ["row_count", "window", "data_quality_policy"]
+    sources_known = mine["source_sha256"] is not None and theirs["source_sha256"] is not None
+    if sources_known:
+        keys.append("source_sha256")  # a shared manifest may cover distinct report inputs
+    if (mine["fold_test_start_seqs"] is not None and theirs["fold_test_start_seqs"] is not None
+            and run["split"] == base["split"]):
+        keys.append("fold_test_start_seqs")
+    changed = [key for key in keys if mine[key] != theirs[key]]
     if a is not None and b is not None:
-        if a != b or rows[0] != rows[1]:
-            found["different-sample"] = {"baseline": {"input_sha256": b, "row_count": rows[1]},
-                                         "run": {"input_sha256": a, "row_count": rows[0]}}
-    else:
-        mine, theirs = run["sample"], base["sample"]
-        keys = ["row_count", "window", "data_quality_policy"]
-        if mine["source_sha256"] is not None and theirs["source_sha256"] is not None:
-            keys.append("source_sha256")  # a declared mismatch is evidence; a match is not verification
-        if (mine["fold_test_start_seqs"] is not None and theirs["fold_test_start_seqs"] is not None
-                and run["split"] == base["split"]):
-            keys.append("fold_test_start_seqs")
-        changed = [key for key in keys if mine[key] != theirs[key]]
-        if changed:
-            found["different-sample"] = {"baseline": {k: theirs[k] for k in changed},
-                                         "run": {k: mine[k] for k in changed}}
+        if a != b or changed:
+            found["different-sample"] = {"baseline": {"input_sha256": b, "row_count": theirs["row_count"],
+                                                      **{key: theirs[key] for key in changed}},
+                                         "run": {"input_sha256": a, "row_count": mine["row_count"],
+                                                 **{key: mine[key] for key in changed}}}
+    elif changed:
+        found["different-sample"] = {"baseline": {key: theirs[key] for key in changed},
+                                     "run": {key: mine[key] for key in changed}}
     for reason, key in (("different-costs", "costs"), ("different-metrics", "metric_definitions"),
                         ("different-splits", "split")):
         if run[key] != base[key]:
             found[reason] = {"baseline": base[key], "run": run[key]}
-    if "different-sample" not in found and (a is None or b is None):
+    if "different-sample" not in found and (a is None or b is None or not sources_known):
         found["unverified-sample"] = {"baseline": base["provenance"]["status"], "run": run["provenance"]["status"],
                                       "checked": "declared row count, window, data-quality policy and any "
                                                  "declared source checksum or fold anchors"}

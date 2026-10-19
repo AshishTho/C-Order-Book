@@ -131,6 +131,75 @@ class CompareTests(unittest.TestCase):
         self.assertNotEqual(detail["run"]["input_sha256"], detail["baseline"]["input_sha256"])
         self.assertEqual(detail["run"]["row_count"], detail["baseline"]["row_count"])
 
+    def shared_manifest(self):
+        return provenance.build_manifest(
+            [{"path": "data/bbo.csv", "source": "synthetic:market()", "retrieved_at": STAMP},
+             {"path": "data/bbo_changed.csv", "source": "synthetic:changed market()", "retrieved_at": STAMP}],
+            [], [{"id": "base", "parameters": {}, "inputs": ["data/bbo.csv"]},
+                 {"id": "changed", "parameters": {}, "inputs": ["data/bbo_changed.csv"]}], root=self.root)
+
+    def test_shared_manifest_does_not_hide_different_report_sources(self):
+        manifest = self.shared_manifest()
+        self.assertTrue(provenance.verify_manifest(manifest, self.root)["valid"])
+        for names in (("base", "changed"), ("changed", "base")):
+            with self.subTest(baseline=names[0]):
+                entries = [{**self.run_entry(name), "provenance": manifest} for name in names]
+                result = compare_runs(entries)
+                run = self.run_of(result, names[1])
+                self.assertEqual((run["status"], run["reasons"]), ("incompatible", ["different-sample"]))
+                detail = run["details"]["different-sample"]
+                self.assertNotEqual(detail["run"]["source_sha256"], detail["baseline"]["source_sha256"])
+                self.assertEqual(result["pairwise"][0]["reasons"], ["different-sample"])
+                self.assertEqual(set(run["label_counts"]), {"not-comparable"})
+                self.assertTrue(all(row["cells"][names[1]]["delta"] is None for row in result["metrics"]))
+                self.assertTrue(any(row["cells"][names[1]]["value"] is not None for row in result["metrics"]))
+                for fmt in ("text", "json", "markdown"):
+                    output = render(result, fmt)
+                    self.assertIn("different-sample", output)
+                    for name in names:
+                        self.assertIn(name, output)
+
+    def test_shared_manifest_same_report_source_stays_compatible(self):
+        manifest = self.shared_manifest()
+        result = compare_runs([{**self.run_entry(name), "provenance": manifest}
+                               for name in ("base", "same", "slower")])
+        for name in ("same", "slower"):
+            run = self.run_of(result, name)
+            self.assertEqual((run["status"], run["reasons"]), ("compatible", []))
+        self.assertTrue(any(row["cells"]["slower"]["delta"] not in (None, 0) for row in result["metrics"]))
+
+    def test_shared_manifest_does_not_hide_sample_policy_or_anchor_changes(self):
+        manifest = self.shared_manifest()
+        for field in ("data_quality_policy", "fold_test_start_seqs"):
+            with self.subTest(field=field):
+                entries = [{**self.run_entry(name), "provenance": manifest} for name in ("base", "same")]
+                if field == "data_quality_policy":
+                    for index, entry in enumerate(entries):
+                        entry["report"]["data_quality"] = {"policy": {
+                            "max_gap_seconds": 5, "max_staleness_seconds": 30 + index,
+                            "on_gap": "mark", "forward_fill_limit_seconds": 0}}
+                else:
+                    entries[1]["report"]["folds"][0]["split"]["test_start_seq"] += 1
+                result = compare_runs(entries)
+                run = self.run_of(result, "same")
+                self.assertEqual((run["status"], run["reasons"]), ("incompatible", ["different-sample"]))
+                self.assertIn(field, run["details"]["different-sample"]["run"])
+                self.assertTrue(all(row["cells"]["same"]["delta"] is None for row in result["metrics"]))
+
+    def test_manifest_without_report_source_is_unverified(self):
+        manifest = self.shared_manifest()
+        for missing in ((0,), (1,), (0, 1)):
+            with self.subTest(missing=missing):
+                entries = [{**self.run_entry(name), "provenance": manifest} for name in ("base", "same")]
+                for index in missing:
+                    entries[index]["report"]["source"].pop("sha256")
+                result = compare_runs(entries)
+                run = self.run_of(result, "same")
+                self.assertEqual((run["status"], run["reasons"]), ("unverified", ["unverified-sample"]))
+                self.assertEqual(result["pairwise"][0]["reasons"], ["unverified-sample"])
+                for index in missing:
+                    self.assertIn("provenance-not-cross-checked-with-report", result["runs"][index]["flags"])
+
     def test_missing_provenance_is_unverified_sample(self):
         result = self.compare("base", "bare")
         run = self.run_of(result, "bare")
