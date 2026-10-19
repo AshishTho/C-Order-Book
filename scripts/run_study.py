@@ -1,5 +1,6 @@
 """Reproduce the synthetic end-to-end study; no downloads or Python dependencies."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -9,6 +10,13 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def timeout_output(value: bytes | str | None) -> tuple[str | None, str | None]:
+    """Retain raw captured bytes; UTF-8 replacement text is only for display."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace"), base64.b64encode(value).decode("ascii")
+    return value, None  # Absent or already-decoded output has no original bytes to encode.
 
 
 def executable(build: Path, name: str, config: str) -> Path:
@@ -59,7 +67,16 @@ def main():
         ]
         logs = []
         for command in commands:
-            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120)
+            try:
+                result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120)
+            except subprocess.TimeoutExpired as error:
+                stdout, stdout_base64 = timeout_output(error.stdout)
+                stderr, stderr_base64 = timeout_output(error.stderr)
+                logs.append({"command": command, "returncode": None, "timed_out": True,
+                             "timeout_seconds": error.timeout, "stdout": stdout, "stderr": stderr,
+                             "stdout_base64": stdout_base64, "stderr_base64": stderr_base64})
+                (output / "failure.json").write_text(json.dumps(logs, indent=2), encoding="utf-8")
+                raise
             logs.append({"command": command, "returncode": result.returncode,
                          "stdout": result.stdout, "stderr": result.stderr})
             print(result.stdout, end="")
