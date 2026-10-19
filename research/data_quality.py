@@ -228,7 +228,8 @@ def read_timed_snapshot_source(path: Path) -> tuple[list[Snapshot], list, str]:
     return rows, stamps, digest
 
 
-def load_policy(path: Path) -> dict:
+def read_policy_source(path: Path) -> tuple[dict, str]:
+    """Validate a policy and hash the exact bytes parsed in the same read."""
     def reject_constant(name):
         raise ValueError(f"non-finite constant {name} not allowed in policy")
 
@@ -240,5 +241,11 @@ def load_policy(path: Path) -> dict:
             result[key] = value
         return result
 
-    with Path(path).open(encoding="utf-8-sig") as stream:
-        return validate_policy(json.load(stream, parse_constant=reject_constant, object_pairs_hook=unique))
+    payload = Path(path).read_bytes()
+    policy = validate_policy(json.loads(payload.decode("utf-8-sig"), parse_constant=reject_constant,
+                                        object_pairs_hook=unique))
+    return policy, hashlib.sha256(payload).hexdigest()
+
+
+def load_policy(path: Path) -> dict:
+    return read_policy_source(path)[0]
