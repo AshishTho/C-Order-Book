@@ -1,5 +1,5 @@
 """Synthetic demo: every output, plain limitations, byte-identical reruns, overwrite refusal, confined writes."""
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from research import compare, demo, provenance
+from research import compare, data_quality, demo, provenance
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED = {"events.csv", "bbo.csv", "data_quality_policy.json", "manifest.json", "data_quality.json",
@@ -179,6 +179,111 @@ class DemoTests(unittest.TestCase):
             target = Path(folder) / "out"
             self.assertEqual(run("--output-dir", target, "--events", 50)[0], 2)
             self.assertFalse(target.exists())
+
+
+class DemoPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())) / "out"
+        # A tiny real synthetic fold; no benchmark binaries or external services.
+        for name, value in (("INITIAL_TRAIN", 31), ("TEST_SIZE", 31), ("MIN_EVENTS", 63)):
+            self.stack.enter_context(patch.object(demo, name, value))
+        self.original = dict(demo.POLICY)
+        self.replacement = {**self.original, "max_gap_seconds": 0.5, "on_gap": "mark"}
+
+    def run_demo(self):
+        return run("--output-dir", self.root, "--events", 63)
+
+    def reject_replacement(self, window, replacement):
+        build, verify = provenance.build_manifest, provenance.verify_manifest
+
+        def replace_policy():
+            (self.root / "data_quality_policy.json").write_bytes(replacement)
+
+        def replace_then_build(*args, **kwargs):
+            replace_policy()
+            return build(*args, **kwargs)
+
+        def verify_then_replace(*args, **kwargs):
+            result = verify(*args, **kwargs)
+            self.assertTrue(result["valid"])
+            replace_policy()
+            return result
+
+        with patch.object(provenance, "build_manifest" if window == "before_hash" else "verify_manifest",
+                          side_effect=replace_then_build if window == "before_hash" else verify_then_replace), \
+                patch.object(data_quality, "apply_policy", wraps=data_quality.apply_policy) as quality, \
+                patch.object(demo, "evaluate_walk_forward", wraps=demo.evaluate_walk_forward) as evaluate:
+            code, _, err = self.run_demo()
+        self.assertEqual(code, 2, err)
+        self.assertIn("data_quality_policy.json", err)
+        quality.assert_not_called()
+        evaluate.assert_not_called()
+        reports = EXPECTED - {"events.csv", "bbo.csv", "data_quality_policy.json", "manifest.json"}
+        self.assertFalse(reports.intersection(p.name for p in self.root.iterdir()))
+        self.assertEqual((self.root / "data_quality_policy.json").read_bytes(), replacement)
+
+    def test_policy_substitution_before_manifest_hash_is_rejected(self):
+        self.reject_replacement("before_hash", json.dumps(self.replacement).encode("utf-8"))
+
+    def test_policy_substitution_after_verification_is_rejected(self):
+        self.reject_replacement("after_verify", json.dumps(self.replacement).encode("utf-8"))
+
+    def test_policy_reformatting_before_manifest_hash_is_rejected(self):
+        self.reject_replacement("before_hash", json.dumps(self.original).encode("utf-8"))
+
+    def test_policy_reformatting_after_verification_is_rejected(self):
+        self.reject_replacement("after_verify", json.dumps(self.original).encode("utf-8"))
+
+    def assert_policy_consistency(self):
+        for name in ("data_quality.json", "baseline.json", "high_costs.json"):
+            report = json.loads((self.root / name).read_text(encoding="utf-8"))
+            quality = report if name == "data_quality.json" else report["data_quality"]
+            self.assertEqual(quality["policy"], self.original)
+            self.assertEqual(quality["marked"], [])
+        manifest = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+        step = next(s for s in manifest["transformations"] if s["name"] == "research.data_quality.apply_policy")
+        self.assertEqual(step["parameters"], self.original)
+
+    def test_all_consumers_use_published_snapshot_when_global_policy_changes(self):
+        verify, apply_policy = provenance.verify_manifest, data_quality.apply_policy
+        consumed = []
+
+        def verify_then_change_global(*args, **kwargs):
+            result = verify(*args, **kwargs)
+            demo.POLICY.update(self.replacement)
+            return result
+
+        def record_policy(rows, policy, **kwargs):
+            consumed.append(dict(policy))
+            return apply_policy(rows, policy, **kwargs)
+
+        with patch.dict(demo.POLICY), \
+                patch.object(provenance, "verify_manifest", side_effect=verify_then_change_global), \
+                patch.object(data_quality, "apply_policy", side_effect=record_policy):
+            code, _, err = self.run_demo()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(consumed, [self.original] * 3)
+        self.assert_policy_consistency()
+
+    def test_replacement_after_byte_capture_cannot_change_consumed_policy(self):
+        read_bytes = Path.read_bytes
+        captures = []
+
+        def capture_then_replace(path):
+            payload = read_bytes(path)
+            if path == self.root / "data_quality_policy.json":
+                captures.append(payload)
+                path.write_bytes(json.dumps(self.replacement).encode("utf-8"))
+            return payload
+
+        with patch.object(Path, "read_bytes", capture_then_replace):
+            code, _, err = self.run_demo()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(json.loads(captures[0]), self.original)
+        self.assert_policy_consistency()
 
 
 class DemoCollisionTests(unittest.TestCase):
