@@ -3,6 +3,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -54,10 +55,13 @@ def main():
         report["error"] = str(error)
     finally:
         try:
-            # Recheck at publication: another writer may have claimed this path
-            # while the benchmarks ran. Exclusive creation also rejects symlinks.
-            with args.output.open("x", encoding="utf-8") as output:
-                output.write(json.dumps(report, indent=2) + "\n")
+            # Publish a complete file without replacing any destination entry.
+            # Windows open("x") can follow a dangling symlink; a hard link does
+            # not. Stage beside the output so both names are on the same volume.
+            with tempfile.TemporaryDirectory(prefix=".benchmark-report-", dir=args.output.parent) as temp:
+                staged = Path(temp) / "report.json"
+                staged.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                os.link(staged, args.output)
         except FileExistsError:
             parser.error("Output exists; choose a new path to preserve previous evidence")
         except OSError as error:
