@@ -1,6 +1,6 @@
 """Economic and leakage invariants, not golden-file performance targets."""
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from dataclasses import asdict, replace
 import io
 import hashlib
@@ -12,6 +12,7 @@ import tempfile
 import unittest
 
 from research.generate import generate_events
+from research import lab
 from research.lab import (Calibration, Config, Snapshot, calibrate, evaluate,
                           feature_series, main, markout, read_snapshots, simulate, split_indices)
 from research.replay_viewer import replay_payload, render_replay
@@ -144,6 +145,21 @@ class ResearchTests(unittest.TestCase):
                     path.write_text("seq,bid_price,ask_price,bid_qty,ask_qty\n" + data, encoding="utf-8")
                     with self.assertRaises(ValueError):
                         read_snapshots(path)
+
+    def test_public_evaluation_rejects_invalid_snapshots_before_helpers(self):
+        cases = ({'bid_price': 1000}, {'ask_qty': 0}, {'bid_qty': True},
+                 {'ask_price': 1000.0}, {'bid_price': 2 ** 63},
+                 {'seq': 1}, {'seq': True}, {'seq': 2 ** 64}, None)
+        for mutation in cases:
+            with self.subTest(mutation=mutation), ExitStack() as stack:
+                data = market()
+                data[-1] = replace(data[-1], **mutation) if mutation is not None else object()
+                spies = [stack.enter_context(patch.object(lab, name, wraps=getattr(lab, name)))
+                         for name in ('feature_series', 'calibrate', 'predictive_metrics', 'simulate')]
+                with self.assertRaises(ValueError):
+                    evaluate(data, Config(horizon=3, delay=1), fee_grid=(0,), delay_grid=(1,))
+                for spy in spies:
+                    spy.assert_not_called()
 
     def test_rejects_zero_delay_and_nonfinite_costs(self):
         for config in (Config(delay=0), Config(fee_ticks=float("nan")),
