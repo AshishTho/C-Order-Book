@@ -83,6 +83,14 @@ def _validate_folds(folds, holdout):
     return out
 
 
+def _widened_quotes(row, widen, index):
+    bid, ask = row.bid_price - widen, row.ask_price + widen
+    if (type(bid) is not int or type(ask) is not int
+            or not 0 < bid < ask < 2 ** 63):
+        raise ValueError(f'spread widening {widen} requires positive int64 bid < ask at row {index}')
+    return bid, ask
+
+
 def _stress_rows(rows, start, stop, widen=0, depth=1.0):
     from fractions import Fraction
     # Exact rational from the shortest decimal repr, e.g. 0.3 -> 3/10, 1.0 -> 1.
@@ -91,9 +99,7 @@ def _stress_rows(rows, start, stop, widen=0, depth=1.0):
     out = list(rows[:start])
     for i in range(start, stop):
         r = rows[i]
-        bid, ask = r.bid_price - widen, r.ask_price + widen
-        if bid <= 0:
-            raise ValueError(f'spread widening {widen} gives nonpositive bid at row {i}')
+        bid, ask = _widened_quotes(r, widen, i)
         out.append(dataclasses.replace(
             r, bid_price=bid, ask_price=ask,
             bid_qty=max(1, r.bid_qty * num // den),
@@ -133,6 +139,12 @@ def evaluate_walk_forward(rows, config, folds, final_holdout_start, *, fee_grid=
     pre = validate_preflight(rows, config, folds, holdout,
                              tuple(sorted({config.delay, *grids['delay_observations']})),
                              timestamps=timestamps, feature_data=feature_data)
+    # Widenings are nonnegative: the largest checks both bounds for every scenario.
+    # Only test windows are transformed; validate them all before any evaluation.
+    widest = max(grids['spread_widening_ticks'])
+    for fold in folds:
+        for index in range(fold['test_start'], fold['test_stop']):
+            _widened_quotes(rows[index], widest, index)
     custom = timestamps is not None or feature_data is not None
     results = []
     for k, fold in enumerate(folds):
