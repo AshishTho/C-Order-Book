@@ -12,7 +12,7 @@ from typing import Sequence
 from research import data_quality, provenance
 from research.lab import (Config, SIGNALS, Snapshot, calibrate, feature_series,
                           predictive_metrics, read_snapshot_source, simulate,
-                          validate_output_paths, write_html)
+                          validate_output_paths, validate_snapshot_rows, write_html)
 
 
 def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
@@ -29,6 +29,7 @@ def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
     unchanged and disclosed under "data_quality".
     """
     config.validate()
+    validate_snapshot_rows(rows, allow_invalid_books=quality_policy is not None)
     margin = config.delay + config.horizon
     if any(type(x) is not int or x < 20 + margin for x in (initial_train, test_size)):
         raise ValueError("initial_train and test_size must allow 20 decisions after delay+horizon")

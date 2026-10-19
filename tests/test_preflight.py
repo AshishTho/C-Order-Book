@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from research.preflight import SIGNALS, validate_preflight
 
@@ -9,6 +10,16 @@ N, HOLD, FOLD = 100, 80, {'test_start': 40, 'test_stop': 60}
 
 def rows(seqs=None):
     return [Snapshot(s, 100, 101, 5, 5) for s in (seqs if seqs is not None else range(N))]
+
+
+def invalid_books(seq):
+    row = Snapshot(seq, 100, 101, 5, 5)
+    yield 'crossed', replace(row, bid_price=102)
+    yield 'locked', replace(row, bid_price=101)
+    for field in ('bid_price', 'ask_price', 'bid_qty', 'ask_qty'):
+        value = getattr(row, field)
+        for bad in (0, -1, 2 ** 63, True, float(value), float('nan'), str(value), None):
+            yield f'{field}={bad!r}', replace(row, **{field: bad})
 
 
 def feats(clock='seq', n=60, shift=0):
@@ -56,6 +67,25 @@ class PreflightTest(unittest.TestCase):
             validate_preflight(rows(), Config(), [FOLD], True, (2,))
         with self.assertRaises(ValueError):
             validate_preflight(rows(), Config(delay=0), [FOLD], HOLD, (2,))
+
+    def test_invalid_quotes_and_depth_are_rejected(self):
+        for name, invalid in invalid_books(50):
+            with self.subTest(name), self.assertRaisesRegex(ValueError, r'rows\[50\]'):
+                data = rows()
+                data[50] = invalid
+                run(r=data)
+
+    def test_valid_integer_boundaries_are_preserved(self):
+        cases = ((1, 2, 1, 1),
+                 (2 ** 53 + 1, 2 ** 53 + 2, 2 ** 53 + 3, 2 ** 53 + 4),
+                 (2 ** 63 - 2, 2 ** 63 - 1, 2 ** 63 - 1, 1))
+        for book in cases:
+            with self.subTest(book=book):
+                data = [Snapshot(seq, *book) for seq in range(2 ** 64 - N, 2 ** 64)]
+                before = tuple(data)
+                out = run(r=data)
+                self.assertEqual(out['markers'], tuple(row.seq for row in data))
+                self.assertEqual(tuple(data), before)
 
     def test_bad_features(self):
         def mut(fn):
@@ -123,6 +153,32 @@ class StressIntegration(unittest.TestCase):
 
     def test_invalid_seq_stops_before_eval(self):
         self.assert_no_eval(r=rows([0] + list(range(N - 1))))
+
+    def test_crossed_book_anywhere_stops_before_eval(self):
+        # Check training, test, later-fold and reserved rows before the first helper call.
+        folds = [dict(FOLD), {'test_start': 60, 'test_stop': 80}]
+        for index in (0, 50, 70, 90):
+            with self.subTest(index=index):
+                data = rows()
+                data[index] = replace(data[index], bid_price=102)
+                self.assert_no_eval(r=data, folds=folds)
+
+    def test_invalid_book_fields_stop_before_eval(self):
+        for name, invalid in invalid_books(50):
+            with self.subTest(name):
+                data = rows()
+                data[50] = invalid
+                self.assert_no_eval(r=data)
+
+    def test_valid_extreme_book_keeps_exact_one_tick_losses(self):
+        data = [Snapshot(seq, 2 ** 63 - 2, 2 ** 63 - 1, 2 ** 63 - 1, 2 ** 63 - 1)
+                for seq in range(2 ** 64 - 32, 2 ** 64)]
+        result = swf.evaluate_walk_forward(
+            data, Config(horizon=1, delay=1, fee_ticks=0), [{'test_start': 22, 'test_stop': 30}], 31,
+            fee_grid=(0,), delay_grid=(1,), spread_grid=(0,), depth_grid=(1.0,))
+        execution = result['folds'][0]['signals']['random']['base_simulation']
+        self.assertEqual(execution['completed_round_trips'], 2)
+        self.assertEqual(execution['net_pnl_ticks_lots'], -2)
 
     def test_invalid_later_fold_stops_before_eval(self):
         self.assert_no_eval(folds=[dict(FOLD), {'test_start': 60, 'test_stop': 70}])
