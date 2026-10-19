@@ -1,5 +1,6 @@
 """Capture raw benchmark evidence with binary/source hashes and build metadata."""
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -9,6 +10,14 @@ import platform
 import subprocess
 import tempfile
 from run_study import ROOT, executable, source_hash
+
+
+def timeout_output(value: bytes | str | None) -> tuple[str | None, str | None]:
+    """Keep captured bytes losslessly; UTF-8 replacement text is only a display view."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace"), base64.b64encode(value).decode("ascii")
+    # Preserve absent or already-decoded output without inventing original bytes.
+    return value, None
 
 
 def main():
@@ -40,13 +49,22 @@ def main():
         for name in args.targets:
             binary = executable(build, "bench_" + name, args.config)
             for repeat in range(args.repeats):
+                attempt = {"target": name, "repeat": repeat,
+                           "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
                 # Legacy benchmarks write build/*.bin relative to their cwd.
                 # Isolate each run from earlier captures and support custom builds.
-                with tempfile.TemporaryDirectory(prefix="lob-benchmark-", dir=build) as temp:
-                    (Path(temp) / "build").mkdir()
-                    result = subprocess.run([str(binary)], cwd=temp, capture_output=True, text=True, timeout=180)
-                runs.append({"target": name, "repeat": repeat, "returncode": result.returncode,
-                             "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                try:
+                    with tempfile.TemporaryDirectory(prefix="lob-benchmark-", dir=build) as temp:
+                        (Path(temp) / "build").mkdir()
+                        result = subprocess.run([str(binary)], cwd=temp, capture_output=True, text=True, timeout=180)
+                except subprocess.TimeoutExpired as error:
+                    stdout, stdout_base64 = timeout_output(error.stdout)
+                    stderr, stderr_base64 = timeout_output(error.stderr)
+                    runs.append({**attempt, "returncode": None, "timed_out": True,
+                                 "timeout_seconds": error.timeout, "stdout": stdout, "stderr": stderr,
+                                 "stdout_base64": stdout_base64, "stderr_base64": stderr_base64})
+                    raise
+                runs.append({**attempt, "returncode": result.returncode,
                              "stdout": result.stdout, "stderr": result.stderr})
                 print(f"{name} run {repeat + 1}: exit {result.returncode}")
                 if result.returncode:
