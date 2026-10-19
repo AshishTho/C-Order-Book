@@ -1,4 +1,5 @@
 import copy
+from contextlib import ExitStack
 import dataclasses
 import hashlib
 import importlib.util
@@ -163,6 +164,54 @@ class WalkForwardTests(unittest.TestCase):
             self.assertEqual((stressed.bid_qty, stressed.ask_qty), (qty, qty))
         half = wf._stress_rows(rows, 0, 1, depth=0.5)[0]
         self.assertEqual((half.bid_qty, half.ask_qty), (qty // 2, qty // 2))
+
+    def test_stressed_quote_bounds(self):
+        limit = 2 ** 63
+        valid = ((Snapshot(1, 1, 2, 1, 1), 0, (1, 2)),
+                 (Snapshot(1, 2, limit - 2, 1, 1), 1, (1, limit - 1)),
+                 (Snapshot(1, limit - 2, limit - 1, 1, 1), 0, (limit - 2, limit - 1)))
+        for row, widening, quotes in valid:
+            with self.subTest(row=row, widening=widening):
+                stressed = wf._stress_rows([row], 0, 1, widen=widening)[0]
+                self.assertEqual((stressed.bid_price, stressed.ask_price), quotes)
+                self.assertIs(type(stressed.bid_price), int)
+                self.assertIs(type(stressed.ask_price), int)
+        for row in (Snapshot(1, 1, 3, 1, 1), Snapshot(1, limit - 2, limit - 1, 1, 1)):
+            with self.subTest(row=row), self.assertRaisesRegex(ValueError, 'row 0'):
+                wf._stress_rows([row], 0, 1, widen=1)
+
+    def test_invalid_stress_in_any_fold_stops_before_helpers(self):
+        for index in (60, 120):
+            for bid, ask in ((1, 3), (2 ** 63 - 2, 2 ** 63 - 1)):
+                with self.subTest(index=index, bid=bid, ask=ask), ExitStack() as stack:
+                    data = market()
+                    data[index] = dataclasses.replace(data[index], bid_price=bid, ask_price=ask)
+                    spies = [stack.enter_context(mock.patch.object(wf, name, wraps=getattr(wf, name)))
+                             for name in ('feature_series', 'calibrate', 'predictive_metrics', 'simulate')]
+                    with self.assertRaisesRegex(ValueError, f'row {index}'):
+                        run(data, spread_grid=(0, 1))
+                    for spy in spies:
+                        spy.assert_not_called()
+
+    def test_widening_validation_ignores_non_test_rows(self):
+        data = market()
+        folds = [{'test_start': 60, 'test_stop': 90}, {'test_start': 110, 'test_stop': 140}]
+        # These original books are valid, but widening them would violate both quote bounds.
+        for index in (0, 100, 150, 180):  # training, between folds, unused prefix, reserved suffix
+            data[index] = dataclasses.replace(data[index], bid_price=1, ask_price=2 ** 63 - 1)
+        before = list(data)
+        result = run(data, folds=folds, spread_grid=(0, 1))
+        self.assertEqual(len(result['folds']), 2)
+        self.assertEqual(data, before)
+
+    def test_public_evaluation_accepts_exact_widening_boundary(self):
+        data = constant_book()
+        for fold in FOLDS:
+            for index in range(fold['test_start'], fold['test_stop']):
+                data[index] = dataclasses.replace(data[index], bid_price=2, ask_price=2 ** 63 - 2)
+        result = run(data, spread_grid=(0, 1))
+        self.assertEqual(len(result['folds']), len(FOLDS))
+        self.assertTrue(all(len(fold['signals']) == len(SIGNALS) for fold in result['folds']))
 
 
     def test_decimal_depth_floor_min_one_and_prefix_unchanged(self):
