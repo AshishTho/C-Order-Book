@@ -2,12 +2,14 @@
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from research import compare, demo, provenance
 
@@ -177,6 +179,220 @@ class DemoTests(unittest.TestCase):
             target = Path(folder) / "out"
             self.assertEqual(run("--output-dir", target, "--events", 50)[0], 2)
             self.assertFalse(target.exists())
+
+
+class DemoCollisionTests(unittest.TestCase):
+    SENTINEL = b"other writer's evidence\x00\xff"
+
+    def assert_no_staging(self, root):
+        self.assertLessEqual({p.name for p in root.iterdir()}, EXPECTED)
+
+    def make_competitor(self, root, name, kind, outside):
+        target = root / name
+        if kind == "file":
+            target.write_bytes(self.SENTINEL)
+        elif kind == "directory":
+            target.mkdir()
+            (target / "keep.bin").write_bytes(self.SENTINEL)
+        else:
+            if kind == "symlink":
+                outside.write_bytes(self.SENTINEL)
+            elif kind == "directory_symlink":
+                outside.mkdir()
+                (outside / "keep.bin").write_bytes(self.SENTINEL)
+            try:
+                target.symlink_to(outside, target_is_directory=kind == "directory_symlink")
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+        return target
+
+    def assert_referent(self, kind, outside):
+        if kind == "symlink":
+            self.assertEqual(outside.read_bytes(), self.SENTINEL)
+        elif kind == "directory_symlink":
+            self.assertEqual((outside / "keep.bin").read_bytes(), self.SENTINEL)
+        elif kind == "dangling":
+            self.assertFalse(outside.exists())
+
+    def assert_competitor(self, target, kind, outside):
+        if kind == "file":
+            self.assertEqual(target.read_bytes(), self.SENTINEL)
+        elif kind == "directory":
+            self.assertEqual((target / "keep.bin").read_bytes(), self.SENTINEL)
+        else:
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(target.readlink(), outside)
+            self.assert_referent(kind, outside)
+
+    def collision_after_prepare(self, name, kind, force=False):
+        with tempfile.TemporaryDirectory() as folder:
+            root, outside = Path(folder) / "out", Path(folder) / "external.bin"
+            prepare = demo.prepare_output
+
+            def admit_then_compete(path, requested_force):
+                result = prepare(path, requested_force)
+                self.make_competitor(result, name, kind, outside)
+                return result
+
+            with patch.object(demo, "prepare_output", side_effect=admit_then_compete):
+                code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS,
+                                   *(["--force"] if force else []))
+            self.assertEqual(code, 2, err)
+            self.assertIn(name, err)
+            self.assert_competitor(root / name, kind, outside)
+            self.assert_no_staging(root)
+
+    def test_late_regular_file_at_each_output_is_preserved_without_force(self):
+        for name in sorted(EXPECTED):
+            with self.subTest(name=name):
+                self.collision_after_prepare(name, "file")
+
+    def test_late_directory_is_preserved_even_with_force(self):
+        for force in (False, True):
+            with self.subTest(force=force):
+                self.collision_after_prepare("events.csv", "directory", force)
+
+    def test_late_existing_symlink_is_preserved_without_force(self):
+        self.collision_after_prepare("events.csv", "symlink")
+
+    def test_late_dangling_symlink_is_preserved_without_force(self):
+        self.collision_after_prepare("events.csv", "dangling")
+
+    def test_late_directory_symlink_is_preserved_without_force(self):
+        self.collision_after_prepare("events.csv", "directory_symlink")
+
+    def collision_at_publication(self, kind, force=False):
+        with tempfile.TemporaryDirectory() as folder:
+            root, outside = Path(folder) / "out", Path(folder) / "external.bin"
+            publish_file = os.replace if force else os.link
+
+            def compete_then_publish(source, destination):
+                if Path(destination) == root / "events.csv":
+                    self.assertTrue(Path(source).read_bytes().startswith(b"seq,type,"))
+                    self.make_competitor(root, "events.csv", kind, outside)
+                return publish_file(source, destination)
+
+            with patch("os.replace" if force else "os.link", side_effect=compete_then_publish) as publish:
+                code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS,
+                                   *(["--force"] if force else []))
+            publish.assert_called()
+            if force and kind != "directory":
+                self.assertEqual(code, 0, err)
+                self.assertFalse((root / "events.csv").is_symlink())
+                self.assertTrue((root / "events.csv").read_bytes().startswith(b"seq,type,"))
+                self.assert_referent(kind, outside)
+            else:
+                self.assertEqual(code, 2, err)
+                self.assertIn("events.csv", err)
+                self.assert_competitor(root / "events.csv", kind, outside)
+            self.assert_no_staging(root)
+
+    def test_late_regular_file_at_publication_is_preserved(self):
+        self.collision_at_publication("file")
+
+    def test_late_directory_at_publication_is_preserved(self):
+        self.collision_at_publication("directory")
+
+    def test_late_existing_symlink_at_publication_is_preserved(self):
+        self.collision_at_publication("symlink")
+
+    def test_late_dangling_symlink_at_publication_is_preserved(self):
+        self.collision_at_publication("dangling")
+
+    def test_late_directory_symlink_at_publication_is_preserved(self):
+        self.collision_at_publication("directory_symlink")
+
+    def test_force_replaces_late_regular_file_at_publication(self):
+        self.collision_at_publication("file", force=True)
+
+    def test_force_preserves_late_directory_at_publication(self):
+        self.collision_at_publication("directory", force=True)
+
+    def test_force_replaces_late_existing_symlink_at_publication(self):
+        self.collision_at_publication("symlink", force=True)
+
+    def test_force_replaces_late_dangling_symlink_at_publication(self):
+        self.collision_at_publication("dangling", force=True)
+
+    def test_force_replaces_late_directory_symlink_at_publication(self):
+        self.collision_at_publication("directory_symlink", force=True)
+
+    def test_failed_force_publication_preserves_existing_file_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            target = root / "events.csv"
+            target.write_bytes(self.SENTINEL)
+            with patch("os.replace", side_effect=PermissionError("synthetic replace failure")):
+                code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS, "--force")
+            self.assertEqual(code, 2, err)
+            self.assertIn("synthetic replace failure", err)
+            self.assertEqual(target.read_bytes(), self.SENTINEL)
+            self.assertEqual({p.name for p in root.iterdir()}, {"events.csv"})
+
+    def test_unsupported_hard_links_fail_without_publishing_or_staging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "out"
+            with patch("os.link", side_effect=OSError("hard links unsupported")):
+                code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS)
+            self.assertEqual(code, 2, err)
+            self.assertIn("hard link", err)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_failed_serialization_preserves_force_target_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            target = root / "manifest.json"
+            target.write_bytes(self.SENTINEL)
+
+            def partial_manifest(_manifest, path):
+                Path(path).write_text("partial", encoding="utf-8")
+                raise OSError("synthetic writer failure")
+
+            with patch.object(provenance, "write_manifest", side_effect=partial_manifest):
+                code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS, "--force")
+            self.assertEqual(code, 2, err)
+            self.assertIn("synthetic writer failure", err)
+            self.assertEqual(target.read_bytes(), self.SENTINEL)
+            self.assert_no_staging(root)
+
+    def test_force_replaces_late_regular_file_at_every_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "out"
+            prepare = demo.prepare_output
+
+            def admit_then_compete(path, requested_force):
+                result = prepare(path, requested_force)
+                for name in EXPECTED:
+                    (result / name).write_bytes(self.SENTINEL)
+                return result
+
+            with patch.object(demo, "prepare_output", side_effect=admit_then_compete):
+                code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS, "--force")
+            self.assertEqual(code, 0, err)
+            for name in EXPECTED:
+                self.assertNotEqual((root / name).read_bytes(), self.SENTINEL)
+            self.assertEqual({p.name for p in root.iterdir()}, EXPECTED)
+
+    def force_replaces_symlink(self, kind):
+        with tempfile.TemporaryDirectory() as folder:
+            root, outside = Path(folder) / "out", Path(folder) / "external.bin"
+            root.mkdir()
+            target = self.make_competitor(root, "events.csv", kind, outside)
+            code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS, "--force")
+            self.assertEqual(code, 0, err)
+            self.assertFalse(target.is_symlink())
+            self.assertTrue(target.read_bytes().startswith(b"seq,type,"))
+            self.assert_referent(kind, outside)
+            self.assert_no_staging(root)
+
+    def test_force_replaces_existing_symlink_without_touching_referent(self):
+        self.force_replaces_symlink("symlink")
+
+    def test_force_replaces_dangling_symlink_without_creating_referent(self):
+        self.force_replaces_symlink("dangling")
+
+    def test_force_replaces_directory_symlink_without_touching_referent(self):
+        self.force_replaces_symlink("directory_symlink")
 
 
 if __name__ == "__main__":
