@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from research import provenance
+from research import data_quality, provenance, walk_forward
 from research.lab import Snapshot
 from research.provenance import ManifestError, build_manifest, verify_manifest
 from research.walk_forward import evaluate_walk_forward, main as walk_forward_main
@@ -190,6 +190,93 @@ class WalkForwardManifestTests(unittest.TestCase):
                 return walk_forward_main([*self.base, *extra]), err.getvalue()
             except SystemExit as exit_:
                 return exit_.code, err.getvalue()
+
+    def policy_fixture(self, action):
+        policy = {"max_gap_seconds": 10, "max_staleness_seconds": 30, "on_gap": action,
+                  "forward_fill_limit_seconds": 20}
+        policy_path = self.root / "policy.json"
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        self.source.write_text("seq,bid_price,ask_price,bid_qty,ask_qty,timestamp\n" + "".join(
+            f"{r.seq},{r.bid_price},{r.ask_price},{r.bid_qty},{r.ask_qty},{i + (500 if i >= 120 else 0)}\n"
+            for i, r in enumerate(market())), encoding="utf-8")
+        return policy_path, policy
+
+    def test_policy_changed_after_manifest_verification_refuses_before_evaluation(self):
+        policy_path, policy = self.policy_fixture("reject")
+        manifest = build_manifest(
+            [{"path": path, "source": "synthetic fixture", "retrieved_at": STAMP}
+             for path in ("data/bbo.csv", "policy.json")], [], {"id": "e", "parameters": {}}, root=self.root)
+        manifest_path = self.root / "m.json"
+        provenance.write_manifest(manifest, manifest_path)
+        original_verify = provenance.verify_manifest
+
+        def verify_then_change(*args, **kwargs):
+            result = original_verify(*args, **kwargs)
+            policy_path.write_text(json.dumps({**policy, "on_gap": "mark"}), encoding="utf-8")
+            return result
+
+        output = self.root / "out.json"
+        with patch.object(provenance, "verify_manifest", side_effect=verify_then_change), \
+                patch.object(walk_forward, "evaluate_walk_forward", wraps=evaluate_walk_forward) as evaluate:
+            code, error = self.run_main("--output", str(output), "--manifest", str(manifest_path),
+                                        "--data-quality", str(policy_path))
+        self.assertEqual(code, 2)
+        self.assertIn("policy changed after manifest verification", error)
+        self.assertEqual(evaluate.call_count, 0)
+        self.assertFalse(output.exists())
+
+    def test_policy_changed_while_building_manifest_writes_nothing(self):
+        policy_path, policy = self.policy_fixture("mark")
+
+        def evaluate_then_change(*args, **kwargs):
+            result = evaluate_walk_forward(*args, **kwargs)
+            policy_path.write_text(json.dumps({**policy, "on_gap": "reject"}), encoding="utf-8")
+            return result
+
+        output = self.root / "out.json"
+        with patch.object(walk_forward, "evaluate_walk_forward", side_effect=evaluate_then_change):
+            code, error = self.run_main("--output", str(output), "--write-manifest", "--input-source",
+                                        "synthetic fixture", "--input-retrieved-at", STAMP,
+                                        "--data-quality", str(policy_path))
+        self.assertEqual(code, 2)
+        self.assertIn("policy changed while building the manifest", error)
+        self.assertFalse(output.exists())
+        self.assertFalse(output.with_name(output.name + ".manifest.json").exists())
+
+    def test_unchanged_policy_manifest_writes_and_verifies_a_rerun(self):
+        policy_path, policy = self.policy_fixture("mark")
+        output = self.root / "first.json"
+        code, error = self.run_main("--output", str(output), "--write-manifest", "--input-source",
+                                    "synthetic fixture", "--input-retrieved-at", STAMP,
+                                    "--data-quality", str(policy_path))
+        self.assertEqual((code, error), (0, ""))
+        manifest_path = output.with_name(output.name + ".manifest.json")
+        manifest = provenance.load_json(manifest_path)
+        self.assertTrue(verify_manifest(manifest, self.root)["valid"])
+        self.assertEqual(manifest["inputs"][1]["sha256"], data_quality.read_policy_source(policy_path)[1])
+        rerun = self.root / "second.json"
+        code, error = self.run_main("--output", str(rerun), "--manifest", str(manifest_path),
+                                    "--data-quality", str(policy_path))
+        self.assertEqual((code, error), (0, ""))
+        report = json.loads(rerun.read_text(encoding="utf-8"))
+        self.assertEqual(report["data_quality"]["policy"], policy)
+        self.assertEqual(report["provenance"]["status"], "inputs_rehashed_and_matched")
+
+    def test_used_policy_must_be_listed_in_manifest(self):
+        policy_path, _ = self.policy_fixture("mark")
+        manifest = build_manifest([{"path": "data/bbo.csv", "source": "synthetic", "retrieved_at": STAMP}],
+                                  [], {"id": "e", "parameters": {}}, root=self.root)
+        manifest_path = self.root / "m.json"
+        provenance.write_manifest(manifest, manifest_path)
+        output = self.root / "out.json"
+        with patch.object(walk_forward, "evaluate_walk_forward", wraps=evaluate_walk_forward) as evaluate:
+            code, error = self.run_main("--output", str(output), "--manifest", str(manifest_path),
+                                        "--data-quality", str(policy_path))
+        self.assertEqual(code, 2)
+        self.assertIn("--data-quality", error)
+        self.assertIn("is not an input of manifest", error)
+        self.assertEqual(evaluate.call_count, 0)
+        self.assertFalse(output.exists())
 
     def test_written_manifest_verifies_and_gates_a_rerun(self):
         output = self.root / "reports" / "run1.json"
