@@ -43,7 +43,7 @@ class DemoTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._folder = tempfile.TemporaryDirectory()
-        cls.root = Path(cls._folder.name)
+        cls.root = Path(cls._folder.name).resolve()
         for name, seed in (("first", 7), ("second", 7), ("other", 8)):
             code, _, err = run("--output-dir", cls.root / name, "--seed", seed)
             assert code == 0, err
@@ -132,16 +132,16 @@ class DemoTests(unittest.TestCase):
 
     def test_refuses_to_overwrite_without_force(self):
         with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "out"
+            target = Path(folder).resolve() / "out"
             target.mkdir()
             (target / "keep.txt").write_text("earlier evidence", encoding="utf-8")
             (target / "baseline.json").write_text("earlier report", encoding="utf-8")
-            before = tree(Path(folder))
+            before = tree(Path(folder).resolve())
             code, out, err = run("--output-dir", target, "--seed", 7)
             self.assertEqual((code, out), (2, ""))
             self.assertIn("--force", err)
-            self.assertEqual(tree(Path(folder)), before)
-            not_a_dir = Path(folder) / "file.txt"
+            self.assertEqual(tree(Path(folder).resolve()), before)
+            not_a_dir = Path(folder).resolve() / "file.txt"
             not_a_dir.write_text("x", encoding="utf-8")
             self.assertEqual(run("--output-dir", not_a_dir, "--force")[0], 2)
             self.assertEqual(not_a_dir.read_text(encoding="utf-8"), "x")
@@ -158,7 +158,7 @@ class DemoTests(unittest.TestCase):
     def test_script_from_clean_cwd_writes_nothing_outside_output_directory(self):
         before = checkout_state()
         with tempfile.TemporaryDirectory() as folder:
-            cwd = Path(folder)
+            cwd = Path(folder).resolve()
             start = time.perf_counter()
             result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py"), "--output-dir", "out",
                                      "--seed", "7"], cwd=cwd, capture_output=True, text=True, timeout=120)
@@ -176,7 +176,7 @@ class DemoTests(unittest.TestCase):
 
     def test_rejects_out_of_range_event_count_before_writing(self):
         with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "out"
+            target = Path(folder).resolve() / "out"
             self.assertEqual(run("--output-dir", target, "--events", 50)[0], 2)
             self.assertFalse(target.exists())
 
@@ -185,7 +185,7 @@ class DemoPolicyTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
-        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())) / "out"
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve() / "out"
         # A tiny real synthetic fold; no benchmark binaries or external services.
         for name, value in (("INITIAL_TRAIN", 31), ("TEST_SIZE", 31), ("MIN_EVENTS", 63)):
             self.stack.enter_context(patch.object(demo, name, value))
@@ -289,6 +289,9 @@ class DemoPolicyTests(unittest.TestCase):
 class DemoCollisionTests(unittest.TestCase):
     SENTINEL = b"other writer's evidence\x00\xff"
 
+    def setUp(self):
+        self.link_targets = {}
+
     def assert_no_staging(self, root):
         self.assertLessEqual({p.name for p in root.iterdir()}, EXPECTED)
 
@@ -307,6 +310,7 @@ class DemoCollisionTests(unittest.TestCase):
                 (outside / "keep.bin").write_bytes(self.SENTINEL)
             try:
                 target.symlink_to(outside, target_is_directory=kind == "directory_symlink")
+                self.link_targets[target] = target.readlink()
             except (OSError, NotImplementedError) as exc:
                 self.skipTest(f"symlink creation unavailable: {exc}")
         return target
@@ -326,12 +330,12 @@ class DemoCollisionTests(unittest.TestCase):
             self.assertEqual((target / "keep.bin").read_bytes(), self.SENTINEL)
         else:
             self.assertTrue(target.is_symlink())
-            self.assertEqual(target.readlink(), outside)
+            self.assertEqual(target.readlink(), self.link_targets[target])
             self.assert_referent(kind, outside)
 
     def collision_after_prepare(self, name, kind, force=False):
         with tempfile.TemporaryDirectory() as folder:
-            root, outside = Path(folder) / "out", Path(folder) / "external.bin"
+            root, outside = Path(folder).resolve() / "out", Path(folder).resolve() / "external.bin"
             prepare = demo.prepare_output
 
             def admit_then_compete(path, requested_force):
@@ -368,20 +372,24 @@ class DemoCollisionTests(unittest.TestCase):
 
     def collision_at_publication(self, kind, force=False):
         with tempfile.TemporaryDirectory() as folder:
-            root, outside = Path(folder) / "out", Path(folder) / "external.bin"
+            root, outside = Path(folder).resolve() / "out", Path(folder).resolve() / "external.bin"
             publish_file = os.replace if force else os.link
+            injections = []
 
             def compete_then_publish(source, destination):
                 if Path(destination) == root / "events.csv":
                     self.assertTrue(Path(source).read_bytes().startswith(b"seq,type,"))
                     self.make_competitor(root, "events.csv", kind, outside)
+                    injections.append(destination)
                 return publish_file(source, destination)
 
             with patch("os.replace" if force else "os.link", side_effect=compete_then_publish) as publish:
                 code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS,
                                    *(["--force"] if force else []))
             publish.assert_called()
-            if force and kind != "directory":
+            self.assertEqual(len(injections), 1, "publication race must actually be exercised")
+            windows_directory_link = os.name == "nt" and kind == "directory_symlink"
+            if force and kind != "directory" and not windows_directory_link:
                 self.assertEqual(code, 0, err)
                 self.assertFalse((root / "events.csv").is_symlink())
                 self.assertTrue((root / "events.csv").read_bytes().startswith(b"seq,type,"))
@@ -424,7 +432,7 @@ class DemoCollisionTests(unittest.TestCase):
 
     def test_failed_force_publication_preserves_existing_file_and_cleans_staging(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             target = root / "events.csv"
             target.write_bytes(self.SENTINEL)
             with patch("os.replace", side_effect=PermissionError("synthetic replace failure")):
@@ -436,7 +444,7 @@ class DemoCollisionTests(unittest.TestCase):
 
     def test_unsupported_hard_links_fail_without_publishing_or_staging(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder) / "out"
+            root = Path(folder).resolve() / "out"
             with patch("os.link", side_effect=OSError("hard links unsupported")):
                 code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS)
             self.assertEqual(code, 2, err)
@@ -445,7 +453,7 @@ class DemoCollisionTests(unittest.TestCase):
 
     def test_failed_serialization_preserves_force_target_and_cleans_staging(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             target = root / "manifest.json"
             target.write_bytes(self.SENTINEL)
 
@@ -462,7 +470,7 @@ class DemoCollisionTests(unittest.TestCase):
 
     def test_force_replaces_late_regular_file_at_every_output(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder) / "out"
+            root = Path(folder).resolve() / "out"
             prepare = demo.prepare_output
 
             def admit_then_compete(path, requested_force):
@@ -480,14 +488,20 @@ class DemoCollisionTests(unittest.TestCase):
 
     def force_replaces_symlink(self, kind):
         with tempfile.TemporaryDirectory() as folder:
-            root, outside = Path(folder) / "out", Path(folder) / "external.bin"
+            root, outside = Path(folder).resolve() / "out", Path(folder).resolve() / "external.bin"
             root.mkdir()
             target = self.make_competitor(root, "events.csv", kind, outside)
             code, _, err = run("--output-dir", root, "--events", demo.MIN_EVENTS, "--force")
-            self.assertEqual(code, 0, err)
-            self.assertFalse(target.is_symlink())
-            self.assertTrue(target.read_bytes().startswith(b"seq,type,"))
-            self.assert_referent(kind, outside)
+            if os.name == "nt" and kind == "directory_symlink":
+                # Windows refuses atomic file replacement over a directory symlink.
+                self.assertEqual(code, 2, err)
+                self.assertIn("events.csv", err)
+                self.assert_competitor(target, kind, outside)
+            else:
+                self.assertEqual(code, 0, err)
+                self.assertFalse(target.is_symlink())
+                self.assertTrue(target.read_bytes().startswith(b"seq,type,"))
+                self.assert_referent(kind, outside)
             self.assert_no_staging(root)
 
     def test_force_replaces_existing_symlink_without_touching_referent(self):

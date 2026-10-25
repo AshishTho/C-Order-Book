@@ -7,6 +7,8 @@ Usage (standard library only; no C++ build, network or credentials needed):
 Everything is written inside the output directory (a new temporary directory
 when omitted). A non-empty directory is refused unless --force is given; --force
 replaces only the files this demo writes and leaves any other file alone.
+Windows refuses replacement over a directory symlink, preserving that link and
+its referent; earlier outputs may already have been published before a failure.
 For a given seed, event count and Python version every JSON output is
 byte-identical; wall times appear only in DEMO_RESULTS.md. The BBO is rebuilt by
 a simple Python aggregate book, so the C++ matching engine is not exercised.
@@ -122,7 +124,8 @@ def _target(root: Path, name: str, *, force: bool = False):
         staged = Path(folder) / name
         yield staged
         if force:
-            # Replaces files/symlinks atomically; a directory arriving here still makes replace fail.
+            # Atomically replace supported files/symlinks. Directories and Windows
+            # directory symlinks fail closed, retaining the destination and referent.
             os.replace(staged, path)
         else:
             # Unlike open("x") on Windows, a hard link also refuses a dangling destination symlink.

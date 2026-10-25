@@ -56,7 +56,10 @@ reports `baseline.json` and `high_costs.json`, `comparison.json`/`.md`,
 `manifest.json`, `data_quality.json`, the policy, and the CSV data. Omit
 `--output-dir` to use a new temporary directory; `python -m research.demo` is
 equivalent. A non-empty directory is refused unless `--force` is given, which
-replaces only the demo's own files.
+replaces only the demo's own files. Windows refuses atomic replacement over a
+directory symlink and preserves the link and its referent. Outputs published
+before a later failure remain in the output directory; this is not a whole-run
+transaction.
 
 The same seed gives byte-identical JSON files on the same Python version (wall
 times appear only in `DEMO_RESULTS.md`); another seed changes the data hash and

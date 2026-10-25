@@ -228,7 +228,7 @@ class ManifestPublicationTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        self.root = Path(folder.name)
+        self.root = Path(folder.name).resolve()
         (self.root / "input.csv").write_bytes(b"synthetic input\n")
         self.spec = self.root / "spec.json"
         self.spec.write_text(json.dumps({
@@ -258,6 +258,7 @@ class ManifestPublicationTests(unittest.TestCase):
                 self.referent.write_bytes(self.SENTINEL)
             try:
                 self.output.symlink_to(self.referent)
+                self.link_target_before = self.output.readlink()
             except (OSError, NotImplementedError) as exc:
                 self.skipTest(f"symlink creation unavailable: {exc}")
 
@@ -268,7 +269,7 @@ class ManifestPublicationTests(unittest.TestCase):
             self.assertEqual((self.output / "keep.bin").read_bytes(), self.SENTINEL)
         else:
             self.assertTrue(self.output.is_symlink())
-            self.assertEqual(self.output.readlink(), self.referent)
+            self.assertEqual(self.output.readlink(), self.link_target_before)
             if kind == "symlink":
                 self.assertEqual(self.referent.read_bytes(), self.SENTINEL)
             else:
