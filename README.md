@@ -3,6 +3,8 @@
 The October25 local candidate has a [direct Windows reproduction guide](docs/LOCAL_REPRODUCTION.md)
 and [current versus historical validation](docs/VALIDATION.md). Its generated
 experiments remain synthetic, and the local candidate has not been published.
+The [measured local case study](docs/LOCAL_CASE_STUDY.md) retains negative results
+and links the fixed experiment plan and reproduction path.
 
 [![Build, correctness, and research](https://github.com/AshishTho/C-Order-Book/actions/workflows/ci.yml/badge.svg)](https://github.com/AshishTho/C-Order-Book/actions/workflows/ci.yml)
 

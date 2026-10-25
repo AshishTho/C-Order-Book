@@ -19,6 +19,9 @@ The plan requires `config`, `folds` (`test_start`, `test_stop`), and
 `ask_price`, `bid_qty`, `ask_qty` columns with strictly increasing sequence and
 valid positive quotes/depth. Input bytes are read and hashed together. Output is
 strict JSON and exclusively created; previous files are never overwritten.
+Publication stages and closes a complete sibling file before linking it to the
+final path without replacement. An interrupted write leaves no final report;
+partial staging is cleaned up and an existing competing result is preserved.
 
 Training decisions end at `test_start - delay - horizon`; their labels end
 before the test begins. Each fold computes features and execution only through

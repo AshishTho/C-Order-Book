@@ -1,7 +1,9 @@
 """Offline CLI: run walk-forward evaluation from a JSON plan. Research diagnostics only."""
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,8 +52,13 @@ def main(argv=None):
         result = evaluate_walk_forward(rows, config, plan['folds'], plan['final_holdout_start'], **grids)
         result['input_sha256'] = sha
         text = json.dumps(result, sort_keys=True, indent=2, allow_nan=False) + '\n'
-        with open(args.output, 'x', encoding='utf-8') as fh:
-            fh.write(text)
+        # A partial write must never appear at the final report path. Link a
+        # closed sibling file without replacing any competing destination entry.
+        with tempfile.TemporaryDirectory(prefix='.stress-report-', dir=args.output.parent) as temp:
+            staged = Path(temp) / 'report.json'
+            with open(staged, 'x', encoding='utf-8') as fh:
+                fh.write(text)
+            os.link(staged, args.output)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 2

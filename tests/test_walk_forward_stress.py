@@ -4,6 +4,7 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -288,6 +289,43 @@ class CliTests(unittest.TestCase):
         self.out.write_bytes(b'keep me')
         self.assertEqual(self.main(), 2)
         self.assertEqual(self.out.read_bytes(), b'keep me')
+
+    def test_interrupted_write_never_leaves_a_final_report(self):
+        real_open = open
+        for error in (OSError('synthetic disk failure'), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                self.out = self.dir / (type(error).__name__ + '.json')
+                class Interrupted:
+                    def __init__(self, stream):
+                        self.stream = stream
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *args):
+                        self.stream.close()
+                    def write(self, text):
+                        self.stream.write(text[:17])
+                        raise error
+                def interrupted_open(file, mode='r', *args, **kwargs):
+                    stream = real_open(file, mode, *args, **kwargs)
+                    return Interrupted(stream) if mode == 'x' else stream
+                with mock.patch('builtins.open', side_effect=interrupted_open):
+                    if isinstance(error, KeyboardInterrupt):
+                        with self.assertRaises(KeyboardInterrupt):
+                            self.main()
+                    else:
+                        self.assertEqual(self.main(), 2)
+                self.assertFalse(self.out.exists())
+                self.assertEqual(list(self.dir.glob('.stress-report-*')), [])
+
+    def test_competing_report_at_publication_is_preserved(self):
+        real_link = os.link
+        def compete(source, target):
+            self.out.write_bytes(b'other complete report')
+            return real_link(source, target)
+        with mock.patch.object(os, 'link', side_effect=compete):
+            self.assertEqual(self.main(), 2)
+        self.assertEqual(self.out.read_bytes(), b'other complete report')
+        self.assertEqual(list(self.dir.glob('.stress-report-*')), [])
 
     def test_malformed_plans_rejected(self):
         for plan in ({'config': {}, 'folds': FOLDS, 'final_holdout_start': HOLDOUT, 'extra': 1},
