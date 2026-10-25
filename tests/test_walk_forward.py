@@ -39,6 +39,8 @@ class WalkForwardTests(unittest.TestCase):
             self.assertEqual(split["test_stop_exclusive"], end)
             self.assertEqual(split["latest_train_label_index"], start - 1)
             self.assertEqual(split["train_decision_stop_exclusive"], start - 7)
+            self.assertEqual([row['index'] for row in fold['book_snapshots']], list(range(start, end)))
+            self.assertEqual(replay_payload(fold)['invariants']['issues'], [])
             for call in spy.call_args_list[number * len(SIGNALS):(number + 1) * len(SIGNALS)]:
                 self.assertEqual(len(call.args[1]), start)
                 self.assertEqual(len(call.args[0]), start)

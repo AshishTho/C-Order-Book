@@ -387,6 +387,8 @@ def evaluate(rows: Sequence[Snapshot], config: Config, *,
             "Sensitivity panels are held-out diagnostics; choosing their winner requires a fresh holdout.",
         ],
         "strategies": {},
+        "book_snapshots": [{"index": index, **asdict(rows[index])}
+                           for index in range(split, len(rows))],
     }
     for name in SIGNALS:
         calibration = calibrate(features[name], rows, train_stop, config, name)

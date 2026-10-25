@@ -2,7 +2,7 @@
 
 The October25 local candidate has a [direct Windows reproduction guide](docs/LOCAL_REPRODUCTION.md)
 and [current versus historical validation](docs/VALIDATION.md). Its generated
-experiments remain synthetic, and the local candidate has not been published.
+experiments remain synthetic; candidate validation is separate from merging or release.
 The [measured local case study](docs/LOCAL_CASE_STUDY.md) retains negative results
 and links the fixed experiment plan and reproduction path.
 
@@ -86,6 +86,12 @@ Open `build/study/report.html` for equity curves, model comparisons, cost
 sensitivity, and assumptions. `report.json` contains the machine-readable
 experiment, calibration, fills, and inventory. `manifest.json` records the
 commands, input/output hashes, source fingerprint, binary hash, and runtime.
+New reports also record held-out top-of-book snapshots. The existing replay
+cursor shows exact bid/ask/depth beside recorded fills, with visible consistency
+failures for invalid quotes, sequence mismatches and fills inconsistent with the
+recorded side/depth. Older reports explicitly say book state was not recorded.
+These checks are bounded diagnostics, not full engine certification; original
+order-level events are not reconstructed and no strategy is rerun in the viewer.
 
 ```mermaid
 flowchart LR

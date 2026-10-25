@@ -198,6 +198,63 @@ class ResearchTests(unittest.TestCase):
 
 
 class ReplayViewerTests(unittest.TestCase):
+    def test_evaluation_records_only_held_out_book_state(self):
+        rows = market()
+        report = evaluate(rows, Config())
+        start = report['split']['test_start']
+        self.assertEqual(report['book_snapshots'],
+                         [{'index': i, **asdict(rows[i])} for i in range(start, len(rows))])
+        payload = replay_payload(report)
+        self.assertEqual(payload['book'][0], [start, str(rows[start].seq),
+                         str(rows[start].bid_price), str(rows[start].ask_price),
+                         str(rows[start].bid_qty), str(rows[start].ask_qty)])
+        self.assertEqual(payload['invariants']['issues'], [])
+        self.assertTrue(payload['invariants']['bookRecorded'])
+
+    def test_legacy_report_does_not_invent_book_state(self):
+        payload = replay_payload(self.report())
+        self.assertEqual(payload['book'], [])
+        self.assertFalse(payload['invariants']['bookRecorded'])
+        self.assertEqual(payload['invariants']['checkedObservations'], 0)
+
+    def test_tampered_book_displays_failures_without_repairing_records(self):
+        report = evaluate(market(), Config())
+        report['book_snapshots'][0]['bid_price'] = report['book_snapshots'][0]['ask_price']
+        report['book_snapshots'][1]['seq'] = report['book_snapshots'][0]['seq']
+        before = json.dumps(report, sort_keys=True)
+        payload = replay_payload(report)
+        self.assertTrue(any('invalid prices' in issue for issue in payload['invariants']['issues']))
+        self.assertTrue(any('sequence order' in issue for issue in payload['invariants']['issues']))
+        self.assertTrue(any('mismatched book' in issue for issue in payload['invariants']['issues']))
+        self.assertEqual(json.dumps(report, sort_keys=True), before)
+        self.assertIn('id="replayInvariant"', render_replay(report))
+
+    def test_book_integer_precision_and_malformed_book_are_explicit(self):
+        offset = 10 ** 18
+        report = self.report()
+        report['book_snapshots'] = [{'index': 0, 'seq': offset, 'bid_price': offset + 1,
+                                    'ask_price': offset + 2, 'bid_qty': offset, 'ask_qty': 1}]
+        self.assertEqual(replay_payload(report)['book'][0][1:4],
+                         [str(offset), str(offset + 1), str(offset + 2)])
+        report['book_snapshots'] = None
+        self.assertIn('Book snapshots must be a list', replay_payload(report)['invariants']['issues'])
+        report['book_snapshots'] = [None] * 150
+        diagnostics = replay_payload(report)['invariants']
+        self.assertEqual(len(diagnostics['issues']), 100)
+        self.assertGreaterEqual(diagnostics['issueCount'], 150)
+
+    def test_fill_price_and_quantity_disagreement_are_visible(self):
+        for field, value in [('entry_price_ticks', 103), ('quantity', 101)]:
+            with self.subTest(field=field):
+                report = self.report()
+                report['book_snapshots'] = [{'index': i, **asdict(Snapshot(i, 100, 102, 100, 100))}
+                                            for i in range(8)]
+                report['strategies']['constant']['execution']['trades'][0][field] = value
+                before = json.dumps(report, sort_keys=True)
+                issues = replay_payload(report)['invariants']['issues']
+                self.assertTrue(any('fill disagrees' in issue for issue in issues))
+                self.assertEqual(json.dumps(report, sort_keys=True), before)
+
     def report(self, rows=None, config=None):
         rows = rows or [Snapshot(i, 100, 102, 100, 100) for i in range(8)]
         config = config or Config(horizon=2, delay=1, fee_ticks=0.25, slippage_ticks=0.5)

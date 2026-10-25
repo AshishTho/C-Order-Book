@@ -80,7 +80,9 @@ def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
                     "Displayed liquidity is assumed available; no impact, queues, funding or hidden depth model.",
                     "Event delay counts BBO observations, not clock time; fee/slippage inputs are ticks per lot per side.",
                     "No fee/delay sensitivity panels are computed in this walk-forward increment."],
-                "strategies": {}}
+                "strategies": {},
+                "book_snapshots": [{"index": index, **asdict(rows[index])}
+                                   for index in range(start, end)]}
         for name in SIGNALS:
             calibration = calibrate(training_features[name], history, train_stop, config, name)
             fold["strategies"][name] = {

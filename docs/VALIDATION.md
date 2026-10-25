@@ -18,11 +18,13 @@ CMake registration now includes the previously omitted compare, data-quality,
 demo and provenance suites. CMake itself is unavailable in this environment;
 its registration change is inspected, not claimed as an executed CTest run.
 
-Exclusions: historical ancestry is incomplete (missing ancestor
-`f7acb5499089ef87ec02d65836bfe126f07f5f18`); there is no combined remote CI,
-current sanitizer run, live-market validation, publication, merge or installation.
-Exact working-tree contents remain available. Old evidence below is historical
-and must not be counted as current candidate validation.
+The original snapshot lacked ancestor `f7acb5499089ef87ec02d65836bfe126f07f5f18`.
+A read-only refetch from the verified existing repository repaired that history;
+`git fsck --connectivity-only --no-dangling` now passes. Old receipts remain intact.
+Current exclusions are unexecuted local CMake/CTest and sanitizers, live-market
+validation, merge and installation. Remote CI must be checked on the exact
+published candidate head. Old evidence below is historical and must not be
+counted as current candidate validation.
 
 ## Historical validation retained from the earlier portfolio snapshot
 

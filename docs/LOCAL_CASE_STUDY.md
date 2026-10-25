@@ -75,7 +75,8 @@ The generator has artificial anchor quotes. There is no market impact, queue
 position, funding, short availability, real clock, broker or exchange connection.
 Overlapping labels are dependent, and this single holdout supports no independent
 sample significance claim. Current CMake/CTest and sanitizers were not run here.
-No remote publication, merge, installation, or live financial action occurred.
+Measurements were performed locally; publication is tracked separately from
+validation. No merge, installation, or live financial action occurred.
 
 ## Three-minute walkthrough
 
