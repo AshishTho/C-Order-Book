@@ -4,6 +4,133 @@ from __future__ import annotations
 import json
 
 
+MAX_SAVED_REPORT_BYTES = 64 * 1024 * 1024
+
+
+def _validate_saved_cost_inputs(report):
+    """Reject numeric-looking strings before fee arithmetic or browser accumulation."""
+    import math
+    for field in ("fee_ticks", "slippage_ticks"):
+        value = report["config"][field]
+        try:
+            valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError(f"Saved {field} must be a finite nonnegative number")
+    for item in report["strategies"].values():
+        execution = item["execution"]
+        trades = list(execution["trades"])
+        if execution.get("open_trade") is not None:
+            trades.append(execution["open_trade"])
+        for trade in trades:
+            for quantity in [trade["quantity"], *(fill["quantity"] for fill in trade["exit_fills"])]:
+                if type(quantity) is not int or not 0 < quantity < 2**63:
+                    raise ValueError("Saved entry/exit quantity must be a positive integer below 2**63")
+
+
+def select_saved_report(document: dict, fold: int | None = None) -> dict:
+    """Select recorded results only; never read source data or recalculate a fold."""
+    if not isinstance(document, dict) or document.get("schema_version") != 1:
+        raise ValueError("Expected a saved version-1 research report")
+    if "folds" in document:
+        if document.get("protocol") != "expanding_history_independent_folds":
+            raise ValueError("Unsupported fold report protocol")
+        folds = document["folds"]
+        if not isinstance(folds, list) or type(fold) is not int or not 0 <= fold < len(folds):
+            raise ValueError("A walk-forward report requires --fold with a valid zero-based index")
+        selected = folds[fold]
+        if not isinstance(selected, dict) or selected.get("fold") != fold:
+            raise ValueError("Selected fold identity is inconsistent")
+        selected = selected.copy()
+        selected.setdefault("source", document.get("source", {}))
+    else:
+        if fold is not None:
+            raise ValueError("--fold applies only to a saved walk-forward report")
+        selected = document
+    if not isinstance(selected.get("strategies"), dict) or not selected["strategies"]:
+        raise ValueError("Saved report has no recorded strategies")
+    return selected
+
+
+def export_saved_report(source, output, *, fold=None):
+    """Publish a complete, no-clobber replay HTML from at most 64 MiB of saved JSON."""
+    import hashlib
+    import html
+    import os
+    from pathlib import Path
+    import tempfile
+
+    source, output = Path(source), Path(output)
+    if source.resolve() == output.resolve():
+        raise ValueError("Input and output must use distinct paths")
+    if output.exists() or output.is_symlink():
+        raise ValueError("Output already exists; choose a new path")
+    with source.open("rb") as stream:
+        raw = stream.read(MAX_SAVED_REPORT_BYTES + 1)
+    if len(raw) > MAX_SAVED_REPORT_BYTES:
+        raise ValueError("Saved report exceeds the 64 MiB limit")
+    def reject_constant(value):
+        raise ValueError(f"Non-finite JSON constant: {value}")
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    document = json.loads(raw.decode("utf-8-sig"), parse_constant=reject_constant,
+                          object_pairs_hook=unique_keys)
+    selected = select_saved_report(document, fold)
+    try:
+        _validate_saved_cost_inputs(selected)
+        fragment = render_replay(selected)
+    except (KeyError, TypeError, IndexError, AttributeError, OverflowError) as exc:
+        raise ValueError("Incomplete or invalid saved replay fields") from exc
+    evidence = {"saved_report": str(source), "saved_report_sha256": hashlib.sha256(raw).hexdigest(),
+                "selected_fold": fold,
+                "recorded_metadata": {key: document[key] for key in
+                    ("source", "provenance", "runtime", "config", "protocol", "limitations") if key in document}}
+    metadata = html.escape(json.dumps(evidence, indent=2, allow_nan=False))
+    label = "Saved chronological holdout" if fold is None else f"Saved walk-forward fold {fold}"
+    rendered = f'''<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{label} replay</title>
+<style>body{{font:16px/1.5 system-ui;max-width:1100px;margin:auto;padding:24px}}
+pre{{white-space:pre-wrap;overflow-wrap:anywhere}}table{{border-collapse:collapse;width:100%}}
+th,td{{padding:8px;border-bottom:1px solid #bbb;text-align:left}}.scroll{{overflow-x:auto}}
+.warning{{border-left:3px solid #aa6800;padding:12px;background:#fff6df}}</style>
+<h1>{label}</h1><p>This export reads saved results only. It does not rerun calibration,
+simulation or trading, and does not open the original CSV. Recorded provenance declarations
+are shown below; their original inputs and manifests have not been reverified.</p>
+{fragment}<details><summary>Saved report identity and recorded metadata</summary><pre>{metadata}</pre></details>
+</html>'''
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".saved-replay-", dir=output.parent) as folder:
+        staged = Path(folder) / "replay.html"
+        staged.write_text(rendered, encoding="utf-8")
+        # Publish only after the renderer and write succeed; never replace a competitor.
+        os.link(staged, output)
+    return evidence
+
+
+def main(argv=None):
+    import argparse
+    from pathlib import Path
+    import sys
+    parser = argparse.ArgumentParser(description="Inspect saved research JSON without rerunning the experiment.")
+    parser.add_argument("--input", required=True, type=Path, help="saved lab or walk-forward JSON, up to 64 MiB")
+    parser.add_argument("--output", required=True, type=Path, help="new self-contained replay HTML; never overwritten")
+    parser.add_argument("--fold", type=int, help="required zero-based fold for a walk-forward report")
+    args = parser.parse_args(argv)
+    try:
+        export_saved_report(args.input, args.output, fold=args.fold)
+    except (ValueError, OSError, RecursionError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"Wrote {args.output} from recorded results only")
+    return 0
+
+
 def replay_payload(report: dict) -> dict:
     config = report["config"]
     strategies = {}
@@ -136,3 +263,7 @@ def render_replay(report: dict) -> str:
 })();
 </script>
 '''
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
