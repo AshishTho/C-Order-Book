@@ -8,7 +8,7 @@
 evaluate_walk_forward(rows, config, folds, final_holdout_start, ..., timestamps=None, feature_data=None)
 ```
 
-- `timestamps`: optional nonnegative ordered ints, one per row; selects `clock='timestamp'`.
+- `timestamps`: optional nonnegative strictly increasing ints, one per row; selects `clock='timestamp'`. Equal timestamps are rejected before evaluation. Unequal gaps are allowed; delay/horizon still count observations, not seconds.
 - `feature_data`: `{'clock': 'seq'|'timestamp', 'signals': {name: {'values': [...], 'available_at': [...]}}}` for every name in `research.lab.SIGNALS`; arrays of length `max(test_stop)`, finite non-bool numbers, `available_at[i] <= marker[i]`.
 
 ```python

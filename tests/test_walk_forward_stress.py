@@ -50,6 +50,29 @@ class WalkForwardTests(unittest.TestCase):
         only_suffix[190] = dataclasses.replace(only_suffix[190], ask_qty=500)
         self.assertEqual(run(only_suffix), self.base)
 
+    def test_first_test_rows_cannot_change_frozen_training_calibration(self):
+        rows = market()
+        # Change the current test window and later observations. Training stays fixed.
+        for index in range(FOLDS[0]['test_start'], len(rows)):
+            rows[index] = dataclasses.replace(rows[index], bid_price=1000 + index,
+                                             ask_price=1010 + index, bid_qty=1, ask_qty=500)
+        changed = run(rows)
+        for name in SIGNALS:
+            self.assertEqual(changed['folds'][0]['signals'][name]['calibration'],
+                             self.base['folds'][0]['signals'][name]['calibration'])
+        self.assertNotEqual(changed['folds'][0]['signals']['random']['base_simulation'],
+                            self.base['folds'][0]['signals']['random']['base_simulation'])
+
+    def test_irregular_clock_preserves_observation_delay_and_execution(self):
+        rows = market()
+        regular = run(rows, timestamps=list(range(len(rows))))
+        # Unequal event gaps do not imply a constant sampling interval.
+        irregular = run(rows, timestamps=[i * i + 3 * i for i in range(len(rows))])
+        for regular_fold, irregular_fold in zip(regular['folds'], irregular['folds']):
+            self.assertEqual(regular_fold['signals'], irregular_fold['signals'])
+            self.assertNotEqual(regular_fold['reproduction_sha256'],
+                                irregular_fold['reproduction_sha256'])
+
     def test_malformed_folds_and_grids_rejected(self):
         bad_folds = [[], [{'test_start': 60}], [{'test_start': 60, 'test_stop': 100, 'x': 1}],
                      [{'test_start': True, 'test_stop': 100}], [{'test_start': 80, 'test_stop': 80}],

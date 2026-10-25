@@ -1,5 +1,31 @@
 # Recorded validation
 
+## Current local candidate, 25 October 2026
+
+Base: `1c85ec863c3f182c814044425ab7caef8e65825a`, independently cloned locally
+from the combined candidate. The base incorporates twelve recorded source
+commits on portfolio base `6862e13d019c0324cc1110242fd78a3efa6af99e`:
+the benchmark repair and the changes associated with PR14–24. It reuses matching,
+walk-forward, stress, provenance and existing replay-viewer code. No sibling
+Serephine work belongs in this candidate.
+
+Fresh base validation: 210 Python tests collected, 192 passed and 18 Windows
+symlink tests skipped. The matching executable was freshly compiled with GCC
+13.1.0, C++20, `-O2 -Wall -Wextra -pthread -static`, and passed all fourteen
+groups, including 36,000 seeded oracle operations and numeric boundaries.
+The local evidence pack records exact commands, log hashes and later results.
+CMake registration now includes the previously omitted compare, data-quality,
+demo and provenance suites. CMake itself is unavailable in this environment;
+its registration change is inspected, not claimed as an executed CTest run.
+
+Exclusions: historical ancestry is incomplete (missing ancestor
+`f7acb5499089ef87ec02d65836bfe126f07f5f18`); there is no combined remote CI,
+current sanitizer run, live-market validation, publication, merge or installation.
+Exact working-tree contents remain available. Old evidence below is historical
+and must not be counted as current candidate validation.
+
+## Historical validation retained from the earlier portfolio snapshot
+
 Local validation on Windows x64, GCC 13.1.0 (MSYS2 UCRT64), CMake 3.31.10,
 Python 3.10.11, Release build; native CPU tuning disabled.
 

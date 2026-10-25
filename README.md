@@ -1,5 +1,9 @@
 # C++ Order Book & Microstructure Research Lab
 
+The October25 local candidate has a [direct Windows reproduction guide](docs/LOCAL_REPRODUCTION.md)
+and [current versus historical validation](docs/VALIDATION.md). Its generated
+experiments remain synthetic, and the local candidate has not been published.
+
 [![Build, correctness, and research](https://github.com/AshishTho/C-Order-Book/actions/workflows/ci.yml/badge.svg)](https://github.com/AshishTho/C-Order-Book/actions/workflows/ci.yml)
 
 **From order events to execution-aware research.** A C++20 matching engine,
@@ -257,6 +261,8 @@ For a concise demonstration and defensible project talking points, see the
 
 For explicit test boundaries, a reserved final suffix and independent cost,
 delay, spread and depth cases, use the [walk-forward stress diagnostics](research/WALK_FORWARD_STRESS.md).
+Explicit stress timestamps must strictly increase; ties are rejected. Irregular
+gaps are supported, but delays and horizons remain observation counts.
 The existing scheduled walk-forward API remains available. [Repro Capsule](research/REPRO_CAPSULE.md)
 also accepts manually declared experiment parameters and evidence hashes;
 it does not verify those hashes against files or execute supplied commands.
