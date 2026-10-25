@@ -96,6 +96,22 @@ recorded side/depth. Older reports explicitly say book state was not recorded.
 These checks are bounded diagnostics, not full engine certification; original
 order-level events are not reconstructed and no strategy is rerun in the viewer.
 
+Already have saved JSON but no HTML or original CSV? Export its recorded replay
+without rerunning the experiment:
+
+```sh
+python -m research.replay_viewer --input build/study/report.json --output saved-replay.html
+python -m research.replay_viewer --input reports/walk-forward.json --fold 1 --output saved-fold-1.html
+```
+
+Walk-forward reports require an explicit zero-based fold. The self-contained
+HTML preserves recorded results and includes the saved report's SHA-256,
+configuration and provenance declarations. Original CSV/manifest hashes are not
+reverified. Legacy missing-book warnings remain visible. Inputs are bounded to
+64 MiB; malformed reports, invalid folds and existing outputs are refused.
+Publication stages the complete HTML before creating the final path, so failed
+writes cannot leave a partial final artifact or overwrite a competing writer.
+
 ```mermaid
 flowchart LR
     A[Seeded L3 events] --> B[C++ strict replay]
