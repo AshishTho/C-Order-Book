@@ -19,6 +19,9 @@ The plan requires `config`, `folds` (`test_start`, `test_stop`), and
 `ask_price`, `bid_qty`, `ask_qty` columns with strictly increasing sequence and
 valid positive quotes/depth. Input bytes are read and hashed together. Output is
 strict JSON and exclusively created; previous files are never overwritten.
+Publication stages and closes a complete sibling file before linking it to the
+final path without replacement. An interrupted write leaves no final report;
+partial staging is cleaned up and an existing competing result is preserved.
 
 Training decisions end at `test_start - delay - horizon`; their labels end
 before the test begins. Each fold computes features and execution only through
@@ -41,3 +44,15 @@ eight. The stressed midpoint-marked result is **−12 ticks × lots** and the
 hypothetical liquidation mark is **−20**. Neither mark is an additional fill.
 No cross-fold PnL is summed, forced liquidation performed, winner selected, or
 alpha claim made. Keep this loss and existing research results visible.
+
+Timestamp input has a strict ordering contract: duplicate or decreasing stamps
+are rejected before evaluation. Equal-time exchange events require an upstream,
+documented ordering decision; this evaluator does not invent one. Irregular but
+strictly increasing stamps are accepted. Delay and horizon remain counts of BBO
+observations, not elapsed seconds. Timestamp changes alter provenance, not fills.
+
+Adjacent training labels may overlap one another. The boundary purge keeps all
+training label endpoints before each test window; it does not make those labels
+independent trials. No independent-sample significance claim is made. Tests
+perturb the current test window to prove frozen calibration, perturb later rows
+to prove completed-fold isolation, and vary event gaps to preserve execution.

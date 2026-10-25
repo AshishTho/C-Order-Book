@@ -12,7 +12,7 @@ from typing import Sequence
 from research import data_quality, provenance
 from research.lab import (Config, SIGNALS, Snapshot, calibrate, feature_series,
                           predictive_metrics, read_snapshot_source, simulate,
-                          validate_output_paths, write_html)
+                          validate_output_paths, validate_snapshot_rows, write_html)
 
 
 def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
@@ -29,6 +29,7 @@ def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
     unchanged and disclosed under "data_quality".
     """
     config.validate()
+    validate_snapshot_rows(rows, allow_invalid_books=quality_policy is not None)
     margin = config.delay + config.horizon
     if any(type(x) is not int or x < 20 + margin for x in (initial_train, test_size)):
         raise ValueError("initial_train and test_size must allow 20 decisions after delay+horizon")
@@ -79,7 +80,9 @@ def evaluate_walk_forward(rows: Sequence[Snapshot], config: Config, *,
                     "Displayed liquidity is assumed available; no impact, queues, funding or hidden depth model.",
                     "Event delay counts BBO observations, not clock time; fee/slippage inputs are ticks per lot per side.",
                     "No fee/delay sensitivity panels are computed in this walk-forward increment."],
-                "strategies": {}}
+                "strategies": {},
+                "book_snapshots": [{"index": index, **asdict(rows[index])}
+                                   for index in range(start, end)]}
         for name in SIGNALS:
             calibration = calibrate(training_features[name], history, train_stop, config, name)
             fold["strategies"][name] = {
@@ -105,19 +108,22 @@ def _manifest_path(input_path: Path, root: Path) -> str:
     return provenance.check_relative_path(relative, "input path relative to manifest")
 
 
-def _require_verified_input(manifest_path: Path, input_path: Path) -> dict:
-    """Refuse to run unless every manifest input re-hashes and --input is one of them."""
+def _require_verified_inputs(manifest_path: Path, input_paths: dict[str, Path]) -> dict:
+    """Re-hash every manifest input and require each consumed file to be listed."""
     manifest = provenance.load_json(manifest_path)
     report = provenance.verify_manifest(manifest, manifest_path.parent)
     if not report["valid"]:
         raise ValueError(f"manifest verification failed; refusing to run: changed={report['changed']} "
                          f"missing={report['missing']} manifest_hash_ok={report['manifest_hash_ok']} "
                          f"affected_experiments={report['affected_experiments']}")
-    wanted = _manifest_path(input_path, manifest_path.parent)
-    for item in manifest["inputs"]:
-        if item["path"] == wanted:
-            return item
-    raise ValueError(f"--input {input_path} is not an input of manifest {manifest_path}")
+    declarations = {item["path"]: item for item in manifest["inputs"]}
+    declared = {}
+    for argument, input_path in input_paths.items():
+        wanted = _manifest_path(input_path, manifest_path.parent)
+        if wanted not in declarations:
+            raise ValueError(f"--{argument} {input_path} is not an input of manifest {manifest_path}")
+        declared[argument] = declarations[wanted]
+    return declared
 
 
 def main(argv=None):
@@ -138,7 +144,8 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--manifest", type=Path,
                         help="existing provenance manifest; refuse to run unless every input re-hashes "
-                             "and --input is listed (paths relative to the manifest's directory)")
+                             "and --input plus any --data-quality policy are listed "
+                             "(paths relative to the manifest's directory)")
     parser.add_argument("--write-manifest", action="store_true",
                         help="also create OUTPUT.manifest.json recording inputs, steps and parameters")
     parser.add_argument("--input-source", help="free-text input origin for --write-manifest")
@@ -155,15 +162,21 @@ def main(argv=None):
         validate_output_paths(args.input, args.output, args.html)
         if args.write_manifest and (manifest_out.exists() or manifest_out.is_symlink()):
             raise ValueError(f"Output already exists: {manifest_out}; use a new path")
-        declared = _require_verified_input(args.manifest, args.input) if args.manifest else None
-        policy = timestamps = None
+        input_paths = {"input": args.input}
         if args.data_quality:
-            policy = data_quality.load_policy(args.data_quality)
+            input_paths["data-quality"] = args.data_quality
+        declared = _require_verified_inputs(args.manifest, input_paths) if args.manifest else None
+        policy = timestamps = policy_hash = None
+        if args.data_quality:
+            policy, policy_hash = data_quality.read_policy_source(args.data_quality)
             rows, timestamps, source_hash = data_quality.read_timed_snapshot_source(args.input)
         else:
             rows, source_hash = read_snapshot_source(args.input)
-        if declared is not None and declared["sha256"] != source_hash:
-            raise ValueError("input changed after manifest verification; refusing to run")
+        if declared is not None:
+            if declared["input"]["sha256"] != source_hash:
+                raise ValueError("input changed after manifest verification; refusing to run")
+            if policy is not None and declared["data-quality"]["sha256"] != policy_hash:
+                raise ValueError("policy changed after manifest verification; refusing to run")
         report = evaluate_walk_forward(rows, config, initial_train=args.initial_train, test_size=args.test_size,
                                        timestamps=timestamps, quality_policy=policy)
         if not 0 <= args.html_fold < len(report["folds"]):
@@ -193,6 +206,8 @@ def main(argv=None):
                                                  root=root)
             if manifest["inputs"][0]["sha256"] != source_hash:
                 raise ValueError("input changed while building the manifest; nothing written")
+            if policy is not None and manifest["inputs"][1]["sha256"] != policy_hash:
+                raise ValueError("policy changed while building the manifest; nothing written")
         document = json.dumps(report, indent=2, allow_nan=False) + "\n"
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8") as stream:

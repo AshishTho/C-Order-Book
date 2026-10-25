@@ -1,5 +1,11 @@
 # C++ Order Book & Microstructure Research Lab
 
+The October25 local candidate has a [direct Windows reproduction guide](docs/LOCAL_REPRODUCTION.md)
+and [current versus historical validation](docs/VALIDATION.md). Its generated
+experiments remain synthetic; candidate validation is separate from merging or release.
+The [measured local case study](docs/LOCAL_CASE_STUDY.md) retains negative results
+and links the fixed experiment plan and reproduction path.
+
 [![Build, correctness, and research](https://github.com/AshishTho/C-Order-Book/actions/workflows/ci.yml/badge.svg)](https://github.com/AshishTho/C-Order-Book/actions/workflows/ci.yml)
 
 **From order events to execution-aware research.** A C++20 matching engine,
@@ -50,7 +56,10 @@ reports `baseline.json` and `high_costs.json`, `comparison.json`/`.md`,
 `manifest.json`, `data_quality.json`, the policy, and the CSV data. Omit
 `--output-dir` to use a new temporary directory; `python -m research.demo` is
 equivalent. A non-empty directory is refused unless `--force` is given, which
-replaces only the demo's own files.
+replaces only the demo's own files. Windows refuses atomic replacement over a
+directory symlink and preserves the link and its referent. Outputs published
+before a later failure remain in the output directory; this is not a whole-run
+transaction.
 
 The same seed gives byte-identical JSON files on the same Python version (wall
 times appear only in `DEMO_RESULTS.md`); another seed changes the data hash and
@@ -80,6 +89,12 @@ Open `build/study/report.html` for equity curves, model comparisons, cost
 sensitivity, and assumptions. `report.json` contains the machine-readable
 experiment, calibration, fills, and inventory. `manifest.json` records the
 commands, input/output hashes, source fingerprint, binary hash, and runtime.
+New reports also record held-out top-of-book snapshots. The existing replay
+cursor shows exact bid/ask/depth beside recorded fills, with visible consistency
+failures for invalid quotes, sequence mismatches and fills inconsistent with the
+recorded side/depth. Older reports explicitly say book state was not recorded.
+These checks are bounded diagnostics, not full engine certification; original
+order-level events are not reconstructed and no strategy is rerun in the viewer.
 
 ```mermaid
 flowchart LR
@@ -257,6 +272,8 @@ For a concise demonstration and defensible project talking points, see the
 
 For explicit test boundaries, a reserved final suffix and independent cost,
 delay, spread and depth cases, use the [walk-forward stress diagnostics](research/WALK_FORWARD_STRESS.md).
+Explicit stress timestamps must strictly increase; ties are rejected. Irregular
+gaps are supported, but delays and horizons remain observation counts.
 The existing scheduled walk-forward API remains available. [Repro Capsule](research/REPRO_CAPSULE.md)
 also accepts manually declared experiment parameters and evidence hashes;
 it does not verify those hashes against files or execute supplied commands.

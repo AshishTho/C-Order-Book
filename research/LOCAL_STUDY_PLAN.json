@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "outcomes": [
+    22,
+    23,
+    24,
+    25,
+    27,
+    28
+  ],
+  "declared_at_utc": "2026-10-25T18:36:32.600Z",
+  "hypothesis": "On one newly generated synthetic sequence, fixed imbalance decisions achieve higher held-out net ticks-times-lots than the fixed seeded random control after spread and fees. This is a plumbing comparison, not an alpha hypothesis about real markets.",
+  "data_kind": "synthetic",
+  "seed": 20261025,
+  "events": 5000,
+  "input": "research.generate, replayed by the exact locally built C++ replay_events executable",
+  "holdout": "Existing research.lab chronological last 40% of BBO observations; training labels are purged by delay+horizon. No results inspected before this plan.",
+  "configuration": {
+    "train_fraction": 0.6,
+    "horizon": 10,
+    "delay": 1,
+    "threshold_quantile": 0.75,
+    "fee_ticks": 0.1,
+    "slippage_ticks": 0,
+    "order_size": 1,
+    "seed": 20261025
+  },
+  "primary_metric": "imbalance execution.net_pnl_ticks_lots minus random execution.net_pnl_ticks_lots on the same held-out observations",
+  "controls": [
+    "flat zero-turnover control",
+    "seeded random control"
+  ],
+  "ablation": "Existing cost sensitivity panel, with fixed decisions/parameters; report zero-cost and higher-cost results where supplied. No selection based on ablation.",
+  "parameter_search": "none; exactly one seed, fixed config, no retries to improve measured results",
+  "stress": "Run the checked-in terminal-depth fixture and plan unchanged; retain fees, observation latency, spread and depth assumptions and adverse open-inventory result. This fixture is separate from the held-out comparison.",
+  "benchmark": "Existing bench_rdtsc, 2M deterministic operations and 100K warmup, three repeats on one build/host. Separate serialized engine timing, streaming engine rate, and SPSC pipeline. Retain affinity warnings, variance, compiler flags, binary/source fingerprints. No cross-version speed claim.",
+  "limitations": [
+    "Synthetic input only; no real market evidence or live trading",
+    "Labels overlap within partitions; no independent-sample significance estimate",
+    "No queue position, impact, financing, or venue realism",
+    "Latency is measured in observations, not milliseconds",
+    "Benchmark host load is not controlled"
+  ]
+}

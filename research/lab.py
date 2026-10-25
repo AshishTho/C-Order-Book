@@ -115,6 +115,32 @@ def _parse_snapshots(stream: Iterable[str]) -> list[Snapshot]:
     return result
 
 
+def validate_snapshot_rows(rows: Sequence[Snapshot], *, allow_invalid_books: bool = False) -> None:
+    """Validate in-memory rows before evaluation, without converting numeric values.
+
+    The data-quality path may retain crossed/empty integer books so its policy
+    can report and reject them. Types, ranges and sequence order remain strict.
+    """
+    previous = None
+    for index, row in enumerate(rows):
+        where = f"rows[{index}]"
+        if not isinstance(row, Snapshot):
+            raise ValueError(f"{where} must be a Snapshot instance")
+        if (type(row.seq) is not int or not 0 <= row.seq < 2**64
+                or (previous is not None and row.seq <= previous)):
+            raise ValueError(f"{where}.seq must be a uint64 integer and strictly increase")
+        previous = row.seq
+        for field in ("bid_price", "ask_price", "bid_qty", "ask_qty"):
+            value = getattr(row, field)
+            if type(value) is not int or not -(2**63) <= value < 2**63:
+                raise ValueError(f"{where}.{field} must be an int64 integer")
+        if not allow_invalid_books:
+            if not 0 < row.bid_price < row.ask_price:
+                raise ValueError(f"{where}: require positive int64 bid_price < ask_price")
+            if min(row.bid_qty, row.ask_qty) <= 0:
+                raise ValueError(f"{where}: displayed quantities must be positive int64")
+
+
 def feature_series(rows: Sequence[Snapshot], seed: int = 42) -> dict[str, list[float]]:
     """Each feature at index t uses only information available at t."""
     series: dict[str, list[float]] = {name: [] for name in SIGNALS}
@@ -324,6 +350,7 @@ def simulate(rows: Sequence[Snapshot], values: Sequence[float], start: int,
 def evaluate(rows: Sequence[Snapshot], config: Config, *,
              fee_grid: Sequence[float] = (0.0, 0.1, 0.5, 1.0),
              delay_grid: Sequence[int] = (1, 2, 5)) -> dict:
+    validate_snapshot_rows(rows)
     train_stop, split = split_indices(len(rows), config)
     for fee in fee_grid:
         replace(config, fee_ticks=fee).validate()
@@ -360,6 +387,8 @@ def evaluate(rows: Sequence[Snapshot], config: Config, *,
             "Sensitivity panels are held-out diagnostics; choosing their winner requires a fresh holdout.",
         ],
         "strategies": {},
+        "book_snapshots": [{"index": index, **asdict(rows[index])}
+                           for index in range(split, len(rows))],
     }
     for name in SIGNALS:
         calibration = calibrate(features[name], rows, train_stop, config, name)

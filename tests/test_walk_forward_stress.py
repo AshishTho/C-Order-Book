@@ -1,8 +1,10 @@
 import copy
+from contextlib import ExitStack
 import dataclasses
 import hashlib
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +50,29 @@ class WalkForwardTests(unittest.TestCase):
         only_suffix = market()
         only_suffix[190] = dataclasses.replace(only_suffix[190], ask_qty=500)
         self.assertEqual(run(only_suffix), self.base)
+
+    def test_first_test_rows_cannot_change_frozen_training_calibration(self):
+        rows = market()
+        # Change the current test window and later observations. Training stays fixed.
+        for index in range(FOLDS[0]['test_start'], len(rows)):
+            rows[index] = dataclasses.replace(rows[index], bid_price=1000 + index,
+                                             ask_price=1010 + index, bid_qty=1, ask_qty=500)
+        changed = run(rows)
+        for name in SIGNALS:
+            self.assertEqual(changed['folds'][0]['signals'][name]['calibration'],
+                             self.base['folds'][0]['signals'][name]['calibration'])
+        self.assertNotEqual(changed['folds'][0]['signals']['random']['base_simulation'],
+                            self.base['folds'][0]['signals']['random']['base_simulation'])
+
+    def test_irregular_clock_preserves_observation_delay_and_execution(self):
+        rows = market()
+        regular = run(rows, timestamps=list(range(len(rows))))
+        # Unequal event gaps do not imply a constant sampling interval.
+        irregular = run(rows, timestamps=[i * i + 3 * i for i in range(len(rows))])
+        for regular_fold, irregular_fold in zip(regular['folds'], irregular['folds']):
+            self.assertEqual(regular_fold['signals'], irregular_fold['signals'])
+            self.assertNotEqual(regular_fold['reproduction_sha256'],
+                                irregular_fold['reproduction_sha256'])
 
     def test_malformed_folds_and_grids_rejected(self):
         bad_folds = [[], [{'test_start': 60}], [{'test_start': 60, 'test_stop': 100, 'x': 1}],
@@ -164,6 +189,54 @@ class WalkForwardTests(unittest.TestCase):
         half = wf._stress_rows(rows, 0, 1, depth=0.5)[0]
         self.assertEqual((half.bid_qty, half.ask_qty), (qty // 2, qty // 2))
 
+    def test_stressed_quote_bounds(self):
+        limit = 2 ** 63
+        valid = ((Snapshot(1, 1, 2, 1, 1), 0, (1, 2)),
+                 (Snapshot(1, 2, limit - 2, 1, 1), 1, (1, limit - 1)),
+                 (Snapshot(1, limit - 2, limit - 1, 1, 1), 0, (limit - 2, limit - 1)))
+        for row, widening, quotes in valid:
+            with self.subTest(row=row, widening=widening):
+                stressed = wf._stress_rows([row], 0, 1, widen=widening)[0]
+                self.assertEqual((stressed.bid_price, stressed.ask_price), quotes)
+                self.assertIs(type(stressed.bid_price), int)
+                self.assertIs(type(stressed.ask_price), int)
+        for row in (Snapshot(1, 1, 3, 1, 1), Snapshot(1, limit - 2, limit - 1, 1, 1)):
+            with self.subTest(row=row), self.assertRaisesRegex(ValueError, 'row 0'):
+                wf._stress_rows([row], 0, 1, widen=1)
+
+    def test_invalid_stress_in_any_fold_stops_before_helpers(self):
+        for index in (60, 120):
+            for bid, ask in ((1, 3), (2 ** 63 - 2, 2 ** 63 - 1)):
+                with self.subTest(index=index, bid=bid, ask=ask), ExitStack() as stack:
+                    data = market()
+                    data[index] = dataclasses.replace(data[index], bid_price=bid, ask_price=ask)
+                    spies = [stack.enter_context(mock.patch.object(wf, name, wraps=getattr(wf, name)))
+                             for name in ('feature_series', 'calibrate', 'predictive_metrics', 'simulate')]
+                    with self.assertRaisesRegex(ValueError, f'row {index}'):
+                        run(data, spread_grid=(0, 1))
+                    for spy in spies:
+                        spy.assert_not_called()
+
+    def test_widening_validation_ignores_non_test_rows(self):
+        data = market()
+        folds = [{'test_start': 60, 'test_stop': 90}, {'test_start': 110, 'test_stop': 140}]
+        # These original books are valid, but widening them would violate both quote bounds.
+        for index in (0, 100, 150, 180):  # training, between folds, unused prefix, reserved suffix
+            data[index] = dataclasses.replace(data[index], bid_price=1, ask_price=2 ** 63 - 1)
+        before = list(data)
+        result = run(data, folds=folds, spread_grid=(0, 1))
+        self.assertEqual(len(result['folds']), 2)
+        self.assertEqual(data, before)
+
+    def test_public_evaluation_accepts_exact_widening_boundary(self):
+        data = constant_book()
+        for fold in FOLDS:
+            for index in range(fold['test_start'], fold['test_stop']):
+                data[index] = dataclasses.replace(data[index], bid_price=2, ask_price=2 ** 63 - 2)
+        result = run(data, spread_grid=(0, 1))
+        self.assertEqual(len(result['folds']), len(FOLDS))
+        self.assertTrue(all(len(fold['signals']) == len(SIGNALS) for fold in result['folds']))
+
 
     def test_decimal_depth_floor_min_one_and_prefix_unchanged(self):
         prefix = Snapshot(1, 100, 102, 7, 7)
@@ -216,6 +289,43 @@ class CliTests(unittest.TestCase):
         self.out.write_bytes(b'keep me')
         self.assertEqual(self.main(), 2)
         self.assertEqual(self.out.read_bytes(), b'keep me')
+
+    def test_interrupted_write_never_leaves_a_final_report(self):
+        real_open = open
+        for error in (OSError('synthetic disk failure'), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                self.out = self.dir / (type(error).__name__ + '.json')
+                class Interrupted:
+                    def __init__(self, stream):
+                        self.stream = stream
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *args):
+                        self.stream.close()
+                    def write(self, text):
+                        self.stream.write(text[:17])
+                        raise error
+                def interrupted_open(file, mode='r', *args, **kwargs):
+                    stream = real_open(file, mode, *args, **kwargs)
+                    return Interrupted(stream) if mode == 'x' else stream
+                with mock.patch('builtins.open', side_effect=interrupted_open):
+                    if isinstance(error, KeyboardInterrupt):
+                        with self.assertRaises(KeyboardInterrupt):
+                            self.main()
+                    else:
+                        self.assertEqual(self.main(), 2)
+                self.assertFalse(self.out.exists())
+                self.assertEqual(list(self.dir.glob('.stress-report-*')), [])
+
+    def test_competing_report_at_publication_is_preserved(self):
+        real_link = os.link
+        def compete(source, target):
+            self.out.write_bytes(b'other complete report')
+            return real_link(source, target)
+        with mock.patch.object(os, 'link', side_effect=compete):
+            self.assertEqual(self.main(), 2)
+        self.assertEqual(self.out.read_bytes(), b'other complete report')
+        self.assertEqual(list(self.dir.glob('.stress-report-*')), [])
 
     def test_malformed_plans_rejected(self):
         for plan in ({'config': {}, 'folds': FOLDS, 'final_holdout_start': HOLDOUT, 'extra': 1},

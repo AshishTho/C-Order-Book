@@ -18,10 +18,12 @@ from datetime import datetime
 import hashlib
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import sys
+import tempfile
 
 SCHEMA_VERSION = 1
 KIND = "research_provenance_manifest"
@@ -275,11 +277,19 @@ def load_json(path: Path | str):
 
 
 def write_manifest(manifest: dict, path: Path | str) -> None:
-    """Exclusive creation: an existing manifest is never overwritten."""
+    """Publish a complete manifest without replacing any destination entry."""
+    serialized = json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    if len(serialized.encode("utf-8")) > MAX_MANIFEST_BYTES:
+        raise ManifestError("serialized manifest exceeds size limit")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8", newline="\n") as stream:
-        stream.write(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n")
+    # Windows open("x") can follow a dangling symlink. A hard link refuses
+    # existing destination entries; staging beside the output keeps one volume.
+    with tempfile.TemporaryDirectory(prefix=".provenance-manifest-", dir=path.parent) as folder:
+        staged = Path(folder) / "manifest.json"
+        with staged.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(serialized)
+        os.link(staged, path)
 
 
 def main(argv=None) -> int:

@@ -1,14 +1,16 @@
 """Provenance manifests: re-hashing, change attribution, CLI exit codes, walk-forward gate."""
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from research import provenance
+from research import data_quality, provenance, walk_forward
 from research.lab import Snapshot
 from research.provenance import ManifestError, build_manifest, verify_manifest
 from research.walk_forward import evaluate_walk_forward, main as walk_forward_main
@@ -139,6 +141,56 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaises(ManifestError):
                 verify_manifest(broken, self.root)
 
+    def test_cli_rejects_expanded_manifest_before_creating_output(self):
+        for name, parameters in (("unicode", {"note": "\u00e9" * 256}),
+                                 ("pretty", {"values": list(range(64))})):
+            with self.subTest(name=name):
+                self.experiments[0]["parameters"] = parameters
+                spec = self.root / f"{name}-spec.json"
+                spec.write_text(json.dumps({"inputs": self.inputs, "transformations": self.steps,
+                                            "experiment": self.experiments}, ensure_ascii=False,
+                                           separators=(",", ":")), encoding="utf-8")
+                manifest = self.build()
+                emitted = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True,
+                                      allow_nan=False) + "\n").encode("utf-8")
+                limit = len(emitted) - 1
+                self.assertLess(spec.stat().st_size, limit)
+                target = self.root / name / "manifest.json"
+                with patch.object(provenance, "MAX_MANIFEST_BYTES", limit), \
+                        redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                    code = provenance.main(["build", "--spec", str(spec), "--output", str(target),
+                                            "--root", str(self.root)])
+                self.assertEqual(code, 2)
+                self.assertIn("size limit", err.getvalue())
+                self.assertEqual(out.getvalue(), "")
+                self.assertFalse(target.parent.exists())
+
+    def test_writer_rejects_one_byte_over_limit_without_creating_directories(self):
+        manifest = self.build()
+        emitted = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True,
+                              allow_nan=False) + "\n").encode("utf-8")
+        target = self.root / "absent" / "nested" / "manifest.json"
+        with patch.object(provenance, "MAX_MANIFEST_BYTES", len(emitted) - 1):
+            with self.assertRaisesRegex(ManifestError, "size limit"):
+                provenance.write_manifest(manifest, target)
+        self.assertFalse((self.root / "absent").exists())
+
+    def test_exact_size_limit_preserves_format_and_cli_roundtrip(self):
+        self.experiments[0]["parameters"]["note"] = "\u00e9\n"
+        manifest = self.build()
+        emitted = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True,
+                              allow_nan=False) + "\n").encode("utf-8")
+        target = self.root / "exact.json"
+        with patch.object(provenance, "MAX_MANIFEST_BYTES", len(emitted)):
+            provenance.write_manifest(manifest, target)
+            self.assertEqual(target.read_bytes(), emitted)
+            code, out = quiet(provenance.main, ["verify", str(target)])
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(out)["valid"])
+            with self.assertRaises(FileExistsError):
+                provenance.write_manifest(manifest, target)
+            self.assertEqual(target.read_bytes(), emitted)
+
     def test_cli_build_and_verify_exit_codes(self):
         spec = self.root / "spec.json"
         spec.write_text(json.dumps({"inputs": self.inputs, "transformations": self.steps,
@@ -170,6 +222,157 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(json.loads(out)["missing"], ["a.csv", "data/b.csv"])
 
 
+class ManifestPublicationTests(unittest.TestCase):
+    SENTINEL = b"existing evidence\x00\xff"
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        (self.root / "input.csv").write_bytes(b"synthetic input\n")
+        self.spec = self.root / "spec.json"
+        self.spec.write_text(json.dumps({
+            "inputs": [{"path": "input.csv", "source": "synthetic", "retrieved_at": STAMP}],
+            "transformations": [], "experiment": {"id": "e", "parameters": {}}}), encoding="utf-8")
+        self.output = self.root / "out" / "manifest.json"
+        self.output.parent.mkdir()
+        self.referent = self.root / "referent.bin"
+
+    def run_cli(self):
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+            code = provenance.main(["build", "--spec", str(self.spec), "--output", str(self.output),
+                                    "--root", str(self.root)])
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_no_staging(self):
+        self.assertEqual(list(self.output.parent.glob(".provenance-manifest-*")), [])
+
+    def make_competitor(self, kind):
+        if kind == "file":
+            self.output.write_bytes(self.SENTINEL)
+        elif kind == "directory":
+            self.output.mkdir()
+            (self.output / "keep.bin").write_bytes(self.SENTINEL)
+        else:
+            if kind == "symlink":
+                self.referent.write_bytes(self.SENTINEL)
+            try:
+                self.output.symlink_to(self.referent)
+                self.link_target_before = self.output.readlink()
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+    def assert_competitor(self, kind):
+        if kind == "file":
+            self.assertEqual(self.output.read_bytes(), self.SENTINEL)
+        elif kind == "directory":
+            self.assertEqual((self.output / "keep.bin").read_bytes(), self.SENTINEL)
+        else:
+            self.assertTrue(self.output.is_symlink())
+            self.assertEqual(self.output.readlink(), self.link_target_before)
+            if kind == "symlink":
+                self.assertEqual(self.referent.read_bytes(), self.SENTINEL)
+            else:
+                self.assertFalse(self.referent.exists())
+
+    def existing_collision(self, kind):
+        self.make_competitor(kind)
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 2, err)
+        self.assertEqual(out, "")
+        self.assertTrue(err)
+        self.assert_competitor(kind)
+        self.assert_no_staging()
+
+    def late_collision(self, kind):
+        real_link = os.link
+
+        def compete_then_link(source, destination):
+            # A complete, valid artifact must be staged before publication.
+            manifest = provenance.load_json(source)
+            self.assertTrue(verify_manifest(manifest, self.root)["valid"])
+            self.make_competitor(kind)
+            return real_link(source, destination)
+
+        with patch.object(os, "link", side_effect=compete_then_link) as publish:
+            code, out, err = self.run_cli()
+        publish.assert_called_once()
+        self.assertEqual(code, 2, err)
+        self.assertEqual(out, "")
+        self.assertTrue(err)
+        self.assert_competitor(kind)
+        self.assert_no_staging()
+
+    def test_existing_file_is_preserved(self):
+        self.existing_collision("file")
+
+    def test_existing_directory_is_preserved(self):
+        self.existing_collision("directory")
+
+    def test_existing_symlink_and_referent_are_preserved(self):
+        self.existing_collision("symlink")
+
+    def test_existing_dangling_symlink_does_not_create_referent(self):
+        self.existing_collision("dangling")
+
+    def test_late_file_is_preserved(self):
+        self.late_collision("file")
+
+    def test_late_directory_is_preserved(self):
+        self.late_collision("directory")
+
+    def test_late_symlink_and_referent_are_preserved(self):
+        self.late_collision("symlink")
+
+    def test_late_dangling_symlink_does_not_create_referent(self):
+        self.late_collision("dangling")
+
+    def test_interrupted_write_does_not_leave_partial_manifest(self):
+        real_open, attempts = Path.open, []
+
+        @contextmanager
+        def interrupted_stream(path, *args, **kwargs):
+            with real_open(path, *args, **kwargs) as stream:
+                def write(text):
+                    attempts.append(path)
+                    stream.write(text[:7])
+                    raise OSError("synthetic interrupted write")
+                yield SimpleNamespace(write=write)
+
+        def open_stream(path, *args, **kwargs):
+            if path.name == "manifest.json" and args and args[0] == "x":
+                return interrupted_stream(path, *args, **kwargs)
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", open_stream):
+            code, out, err = self.run_cli()
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("synthetic interrupted write", err)
+        self.assertFalse(self.output.exists())
+        self.assert_no_staging()
+
+    def test_link_failure_leaves_no_output_or_staging(self):
+        with patch.object(os, "link", side_effect=OSError("synthetic unsupported hard link")) as publish:
+            code, out, err = self.run_cli()
+        publish.assert_called_once()
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("synthetic unsupported hard link", err)
+        self.assertFalse(self.output.exists())
+        self.assert_no_staging()
+
+    def test_fresh_manifest_roundtrip_cleans_staging(self):
+        code, out, err = self.run_cli()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["written"], str(self.output))
+        code, report = quiet(provenance.main, ["verify", str(self.output), "--root", str(self.root)])
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(report)["valid"])
+        self.assert_no_staging()
+
+
 class WalkForwardManifestTests(unittest.TestCase):
     def setUp(self):
         self._folder = tempfile.TemporaryDirectory()
@@ -190,6 +393,93 @@ class WalkForwardManifestTests(unittest.TestCase):
                 return walk_forward_main([*self.base, *extra]), err.getvalue()
             except SystemExit as exit_:
                 return exit_.code, err.getvalue()
+
+    def policy_fixture(self, action):
+        policy = {"max_gap_seconds": 10, "max_staleness_seconds": 30, "on_gap": action,
+                  "forward_fill_limit_seconds": 20}
+        policy_path = self.root / "policy.json"
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        self.source.write_text("seq,bid_price,ask_price,bid_qty,ask_qty,timestamp\n" + "".join(
+            f"{r.seq},{r.bid_price},{r.ask_price},{r.bid_qty},{r.ask_qty},{i + (500 if i >= 120 else 0)}\n"
+            for i, r in enumerate(market())), encoding="utf-8")
+        return policy_path, policy
+
+    def test_policy_changed_after_manifest_verification_refuses_before_evaluation(self):
+        policy_path, policy = self.policy_fixture("reject")
+        manifest = build_manifest(
+            [{"path": path, "source": "synthetic fixture", "retrieved_at": STAMP}
+             for path in ("data/bbo.csv", "policy.json")], [], {"id": "e", "parameters": {}}, root=self.root)
+        manifest_path = self.root / "m.json"
+        provenance.write_manifest(manifest, manifest_path)
+        original_verify = provenance.verify_manifest
+
+        def verify_then_change(*args, **kwargs):
+            result = original_verify(*args, **kwargs)
+            policy_path.write_text(json.dumps({**policy, "on_gap": "mark"}), encoding="utf-8")
+            return result
+
+        output = self.root / "out.json"
+        with patch.object(provenance, "verify_manifest", side_effect=verify_then_change), \
+                patch.object(walk_forward, "evaluate_walk_forward", wraps=evaluate_walk_forward) as evaluate:
+            code, error = self.run_main("--output", str(output), "--manifest", str(manifest_path),
+                                        "--data-quality", str(policy_path))
+        self.assertEqual(code, 2)
+        self.assertIn("policy changed after manifest verification", error)
+        self.assertEqual(evaluate.call_count, 0)
+        self.assertFalse(output.exists())
+
+    def test_policy_changed_while_building_manifest_writes_nothing(self):
+        policy_path, policy = self.policy_fixture("mark")
+
+        def evaluate_then_change(*args, **kwargs):
+            result = evaluate_walk_forward(*args, **kwargs)
+            policy_path.write_text(json.dumps({**policy, "on_gap": "reject"}), encoding="utf-8")
+            return result
+
+        output = self.root / "out.json"
+        with patch.object(walk_forward, "evaluate_walk_forward", side_effect=evaluate_then_change):
+            code, error = self.run_main("--output", str(output), "--write-manifest", "--input-source",
+                                        "synthetic fixture", "--input-retrieved-at", STAMP,
+                                        "--data-quality", str(policy_path))
+        self.assertEqual(code, 2)
+        self.assertIn("policy changed while building the manifest", error)
+        self.assertFalse(output.exists())
+        self.assertFalse(output.with_name(output.name + ".manifest.json").exists())
+
+    def test_unchanged_policy_manifest_writes_and_verifies_a_rerun(self):
+        policy_path, policy = self.policy_fixture("mark")
+        output = self.root / "first.json"
+        code, error = self.run_main("--output", str(output), "--write-manifest", "--input-source",
+                                    "synthetic fixture", "--input-retrieved-at", STAMP,
+                                    "--data-quality", str(policy_path))
+        self.assertEqual((code, error), (0, ""))
+        manifest_path = output.with_name(output.name + ".manifest.json")
+        manifest = provenance.load_json(manifest_path)
+        self.assertTrue(verify_manifest(manifest, self.root)["valid"])
+        self.assertEqual(manifest["inputs"][1]["sha256"], data_quality.read_policy_source(policy_path)[1])
+        rerun = self.root / "second.json"
+        code, error = self.run_main("--output", str(rerun), "--manifest", str(manifest_path),
+                                    "--data-quality", str(policy_path))
+        self.assertEqual((code, error), (0, ""))
+        report = json.loads(rerun.read_text(encoding="utf-8"))
+        self.assertEqual(report["data_quality"]["policy"], policy)
+        self.assertEqual(report["provenance"]["status"], "inputs_rehashed_and_matched")
+
+    def test_used_policy_must_be_listed_in_manifest(self):
+        policy_path, _ = self.policy_fixture("mark")
+        manifest = build_manifest([{"path": "data/bbo.csv", "source": "synthetic", "retrieved_at": STAMP}],
+                                  [], {"id": "e", "parameters": {}}, root=self.root)
+        manifest_path = self.root / "m.json"
+        provenance.write_manifest(manifest, manifest_path)
+        output = self.root / "out.json"
+        with patch.object(walk_forward, "evaluate_walk_forward", wraps=evaluate_walk_forward) as evaluate:
+            code, error = self.run_main("--output", str(output), "--manifest", str(manifest_path),
+                                        "--data-quality", str(policy_path))
+        self.assertEqual(code, 2)
+        self.assertIn("--data-quality", error)
+        self.assertIn("is not an input of manifest", error)
+        self.assertEqual(evaluate.call_count, 0)
+        self.assertFalse(output.exists())
 
     def test_written_manifest_verifies_and_gates_a_rerun(self):
         output = self.root / "reports" / "run1.json"

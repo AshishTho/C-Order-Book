@@ -1,5 +1,5 @@
 """Chronology, frozen calibration, bounded fills, and report preservation."""
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from dataclasses import replace
 import hashlib
 import io
@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from research.lab import Config, SIGNALS, Snapshot, calibrate
+from research import walk_forward
+from research.data_quality import DataQualityError
 from research.replay_viewer import replay_payload, render_replay
 from research.walk_forward import evaluate_walk_forward, main
 
@@ -37,6 +39,8 @@ class WalkForwardTests(unittest.TestCase):
             self.assertEqual(split["test_stop_exclusive"], end)
             self.assertEqual(split["latest_train_label_index"], start - 1)
             self.assertEqual(split["train_decision_stop_exclusive"], start - 7)
+            self.assertEqual([row['index'] for row in fold['book_snapshots']], list(range(start, end)))
+            self.assertEqual(replay_payload(fold)['invariants']['issues'], [])
             for call in spy.call_args_list[number * len(SIGNALS):(number + 1) * len(SIGNALS)]:
                 self.assertEqual(len(call.args[1]), start)
                 self.assertEqual(len(call.args[0]), start)
@@ -102,6 +106,42 @@ class WalkForwardTests(unittest.TestCase):
                 evaluate_walk_forward(market(), self.config, initial_train=initial, test_size=size)
         with self.assertRaises(ValueError):
             evaluate_walk_forward(market(), replace(self.config, delay=0), initial_train=60, test_size=40)
+
+    def test_public_evaluation_rejects_invalid_snapshots_before_helpers(self):
+        cases = ({'bid_price': 1000}, {'ask_qty': 0}, {'bid_qty': True},
+                 {'ask_price': 1000.0}, {'bid_price': 2 ** 63},
+                 {'seq': 1}, {'seq': True}, {'seq': 2 ** 64}, None)
+        for mutation in cases:
+            with self.subTest(mutation=mutation), ExitStack() as stack:
+                data = market()
+                data[-1] = replace(data[-1], **mutation) if mutation is not None else object()
+                spies = [stack.enter_context(patch.object(walk_forward, name, wraps=getattr(walk_forward, name)))
+                         for name in ('feature_series', 'calibrate', 'predictive_metrics', 'simulate')]
+                with self.assertRaises(ValueError):
+                    self.evaluate(data)
+                for spy in spies:
+                    spy.assert_not_called()
+
+    def test_quality_policy_preserves_book_errors_and_rejects_malformed_fields(self):
+        policy = {'max_gap_seconds': 5, 'max_staleness_seconds': 1000,
+                  'on_gap': 'mark', 'forward_fill_limit_seconds': 0}
+        cases = (({'bid_price': 1000}, DataQualityError), ({'bid_qty': 0}, DataQualityError),
+                 ({'ask_qty': -1}, DataQualityError), ({'ask_qty': True}, ValueError),
+                 ({'ask_price': 1000.0}, ValueError), ({'bid_price': 2 ** 63}, ValueError),
+                 ({'seq': 1}, ValueError), (None, ValueError))
+        for mutation, error in cases:
+            with self.subTest(mutation=mutation), ExitStack() as stack:
+                data = market()
+                data[70] = replace(data[70], **mutation) if mutation is not None else object()
+                spies = [stack.enter_context(patch.object(walk_forward, name, wraps=getattr(walk_forward, name)))
+                         for name in ('feature_series', 'calibrate', 'predictive_metrics', 'simulate')]
+                with self.assertRaises(error) as raised:
+                    evaluate_walk_forward(data, self.config, initial_train=60, test_size=40,
+                                          quality_policy=policy, timestamps=list(range(len(data))))
+                if error is DataQualityError:
+                    self.assertIn('index 70', str(raised.exception))
+                for spy in spies:
+                    spy.assert_not_called()
 
     def test_cli_hash_outputs_and_existing_replay_preserve_evidence(self):
         with tempfile.TemporaryDirectory() as folder:

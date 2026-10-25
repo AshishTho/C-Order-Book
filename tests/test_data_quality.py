@@ -228,6 +228,34 @@ class WalkForwardIntegrationTests(unittest.TestCase):
                 with self.subTest(bad), self.assertRaises(ValueError):
                     data_quality.read_timed_snapshot_source(path)
 
+    def test_policy_reader_hashes_exact_parsed_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "policy.json"
+            raw = b"\xef\xbb\xbf" + json.dumps(POLICY, indent=2).encode("utf-8") + b"\r\n"
+            path.write_bytes(raw)
+            original_read = Path.read_bytes
+
+            def read_then_change(source):
+                payload = original_read(source)
+                source.write_text(json.dumps(policy(on_gap="mark")), encoding="utf-8")
+                return payload
+
+            with patch.object(Path, "read_bytes", read_then_change):
+                parsed, digest = data_quality.read_policy_source(path)
+            self.assertEqual(parsed, POLICY)
+            self.assertEqual(digest, hashlib.sha256(raw).hexdigest())
+            self.assertEqual(data_quality.load_policy(path), policy(on_gap="mark"))
+
+    def test_policy_reader_retains_strict_json_validation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "policy.json"
+            for raw in (json.dumps(POLICY)[:-1] + ', "on_gap": "mark"}',
+                        json.dumps(POLICY).replace('"max_gap_seconds": 10', '"max_gap_seconds": NaN')):
+                path.write_text(raw, encoding="utf-8")
+                for reader in (data_quality.read_policy_source, data_quality.load_policy):
+                    with self.subTest(raw=raw, reader=reader.__name__), self.assertRaises(ValueError):
+                        reader(path)
+
 
 if __name__ == "__main__":
     unittest.main()
