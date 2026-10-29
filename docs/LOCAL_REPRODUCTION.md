@@ -8,11 +8,15 @@ the study command refuses an existing one. It uses only generated synthetic data
 New-Item -ItemType Directory -Path build -Force | Out-Null
 & 'C:\msys64\ucrt64\bin\g++.exe' -std=c++20 -O2 -Wall -Wextra -pthread -static -Iinclude tests/test_correctness.cpp -o build/test_correctness.exe
 & 'C:\msys64\ucrt64\bin\g++.exe' -std=c++20 -O2 -Wall -Wextra -pthread -static -Iinclude tests/test_feed.cpp -o build/test_feed.exe
+& 'C:\msys64\ucrt64\bin\g++.exe' -std=c++20 -O2 -Wall -Wextra -pthread -static -Iinclude tests/test_flat_hash_boundaries.cpp -o build/test_flat_hash_boundaries.exe
+& 'C:\msys64\ucrt64\bin\g++.exe' -std=c++20 -O2 -Wall -Wextra -pthread -static -Iinclude tests/test_engine_boundaries.cpp -o build/test_engine_boundaries.exe
 & 'C:\msys64\ucrt64\bin\g++.exe' -std=c++20 -O2 -Wall -Wextra -pthread -static -Iinclude tools/replay_events.cpp -o build/replay_events.exe
 & .\build\test_correctness.exe
 & .\build\test_feed.exe
+& .\build\test_flat_hash_boundaries.exe
+& .\build\test_engine_boundaries.exe
 & 'C:\msys64\ucrt64\bin\python.exe' tests/test_replay.py build/replay_events.exe
-& 'C:\msys64\ucrt64\bin\python.exe' -m unittest tests.test_benchmark tests.test_compare tests.test_data_quality tests.test_demo tests.test_experiment_capsule tests.test_leakage_check tests.test_preflight tests.test_provenance tests.test_repro_capsule tests.test_research tests.test_run_study tests.test_walk_forward tests.test_walk_forward_stress
+& 'C:\msys64\ucrt64\bin\python.exe' -m unittest tests.test_benchmark tests.test_compare tests.test_data_quality tests.test_demo tests.test_experiment_capsule tests.test_leakage_check tests.test_preflight tests.test_provenance tests.test_repro_capsule tests.test_research tests.test_run_study tests.test_saved_replay tests.test_walk_forward tests.test_walk_forward_stress
 ```
 
 After a successful build, one existing command reproduces the end-to-end study:
