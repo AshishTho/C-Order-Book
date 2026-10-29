@@ -109,18 +109,20 @@ public:
     }
 
     // ========================================================================
-    // HOT PATH -- insert / overwrite. Returns false only if the load cap
-    // is hit (provisioning failure => reject the order upstream; NEVER
-    // allocate or rehash mid-session).
+    // HOT PATH -- insert / overwrite. Key 0 is reserved and rejected.
+    // A new key returns false at the load cap (provisioning failure =>
+    // reject upstream; NEVER allocate or rehash mid-session). Existing
+    // keys can still be overwritten because they consume no extra slot.
     // ========================================================================
     LOB_FORCE_INLINE bool insert(std::uint64_t key, std::uint64_t val) noexcept {
-        if (LOB_UNLIKELY(size_ >= CapacityPow2 * MaxLoadPct / 100)) return false;
+        if (LOB_UNLIKELY(key == 0)) return false;
         std::uint64_t i = slot_of(key);
         // Common case: home slot free or holds this key -- zero iterations.
         while (slots_[i].key != 0) {
             if (slots_[i].key == key) { slots_[i].val = val; return true; }
             i = (i + 1) & MASK;                 // next slot, same/next line
         }
+        if (LOB_UNLIKELY(size_ >= CapacityPow2 * MaxLoadPct / 100)) return false;
         slots_[i] = { key, val };
         ++size_;
         return true;
@@ -144,6 +146,7 @@ public:
     // to "key never existed": probe chains can never grow over a session.
     // ========================================================================
     LOB_FORCE_INLINE bool erase(std::uint64_t key) noexcept {
+        if (LOB_UNLIKELY(key == 0)) return false;
         std::uint64_t i = slot_of(key);
         while (slots_[i].key != key) {
             if (slots_[i].key == 0) return false;        // not present
